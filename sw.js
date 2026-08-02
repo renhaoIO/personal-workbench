@@ -1,4 +1,4 @@
-const CACHE = "workbench-v1";
+const CACHE = "workbench-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,8 @@ const ASSETS = [
   "./js/app.js",
   "./js/db.js",
   "./js/util.js",
+  "./js/zip.js",
+  "./js/epub.js",
   "./js/views/tasks.js",
   "./js/views/capture.js",
   "./js/views/notes.js",
@@ -19,7 +21,12 @@ const ASSETS = [
   "./js/views/achievements.js",
   "./js/views/charts.js",
   "./js/views/categories.js",
-  "./icons/icon.svg"
+  "./js/views/fitness.js",
+  "./js/views/reader.js",
+  "./js/views/read.js",
+  "./icons/icon.svg",
+  "./icons/icon-192.png",
+  "./icons/icon-512.png"
 ];
 
 self.addEventListener("install", (e) => {
