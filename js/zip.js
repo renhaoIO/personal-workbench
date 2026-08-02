@@ -1,8 +1,8 @@
 // 极简 ZIP 解包：仅支持 store(0) / deflate(8)，用于解析 EPUB / FB2 容器。
 // 依赖浏览器内置 DecompressionStream('deflate-raw')，无需任何第三方库，离线可用。
 export async function unzip(buf) {
-  const bytes = new Uint8Array(buf);
-  const dv = new DataView(buf);
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   // 1) 从文件尾部定位 End Of Central Directory (EOCD)
   let eocd = -1;
@@ -48,10 +48,25 @@ function normalizeName(n) {
 }
 
 async function inflate(raw) {
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("当前环境不支持解压（DecompressionStream 不可用），无法导入 EPUB/FB2，请改用 TXT 或更新浏览器");
+  }
   const ds = new DecompressionStream("deflate-raw");
   const w = ds.writable.getWriter();
   w.write(raw);
   await w.close();
-  const ab = await new Response(ds.readable).arrayBuffer();
-  return new Uint8Array(ab);
+  // 用分块读取消费流，避免个别 WebView 中 new Response(stream).arrayBuffer() 死锁导致导入卡在“解析中”
+  const reader = ds.readable.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
 }
