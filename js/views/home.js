@@ -78,15 +78,14 @@ export async function renderHome(root) {
   start.setDate(start.getDate() - 181); // 约 26 周
   start.setDate(start.getDate() - start.getDay()); // 对齐到周日
 
-  const values = Object.values(byDate);
-  const maxMin = Math.max(1, ...values.map((s) => s / 60));
   const cursor = new Date(start);
   let cells = [];
   while (cursor <= today) {
     const key = fmtDate(cursor.getTime());
     const min = Math.round((byDate[key] || 0) / 60);
+    // 固定半小时一档：0 / ≤30 / ≤60 / ≤90 / >90 分钟 → 0-4 级
     let lvl = 0;
-    if (min > 0) lvl = min < maxMin / 4 ? 1 : min < maxMin / 2 ? 2 : min < (maxMin * 3) / 4 ? 3 : 4;
+    if (min > 0) lvl = min <= 30 ? 1 : min <= 60 ? 2 : min <= 90 ? 3 : 4;
     const cell = h("div", {
       class: "heat-cell", "data-l": String(lvl),
       title: `${key} · ${min} 分钟`,
