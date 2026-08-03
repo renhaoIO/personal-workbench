@@ -83,9 +83,9 @@ export async function renderHome(root) {
   while (cursor <= today) {
     const key = fmtDate(cursor.getTime());
     const min = Math.round((byDate[key] || 0) / 60);
-    // 固定半小时一档：0 / ≤30 / ≤60 / ≤90 / >90 分钟 → 0-4 级
+    // 分档：1级≤30 / 2级31-90 / 3级91-180 / 4级>180 分钟
     let lvl = 0;
-    if (min > 0) lvl = min <= 30 ? 1 : min <= 60 ? 2 : min <= 90 ? 3 : 4;
+    if (min > 0) lvl = min <= 30 ? 1 : min <= 90 ? 2 : min <= 180 ? 3 : 4;
     const cell = h("div", {
       class: "heat-cell", "data-l": String(lvl),
       title: `${key} · ${min} 分钟`,
