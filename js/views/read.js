@@ -1,5 +1,5 @@
-// 阅读器：全屏阅读界面 + 目录 + 书签 + 批注（荧光笔/下划线 多色）+ 四种翻页模式。
-// 翻页模式：scroll 连续滚动 / slide 平滑滑动 / simulate 仿真翻页 / cover 无动画切换。
+// 阅读器：全屏阅读界面 + 目录 + 书签 + 批注（荧光笔/下划线 多色）+ 两种翻页模式。
+// 翻页模式：scroll 连续滚动 / cover 无动画分页切换（参考开源阅读，每页文字均匀）。
 // 富文本渲染（图片/粗体/斜体保留），阅读计时，进度自动保存。
 import { db } from "../db.js";
 import { h, toast } from "../util.js";
@@ -13,7 +13,7 @@ const HL_COLORS = [
   { v: "#ffeb3b", n: "黄" }, { v: "#ff8a80", n: "红" }, { v: "#82b1ff", n: "蓝" },
   { v: "#b9f6ca", n: "绿" }, { v: "#ffe082", n: "橙" }, { v: "#b388ff", n: "紫" },
 ];
-const MODE_LABEL = { scroll: "滚动", slide: "平滑", simulate: "仿真", cover: "切换" };
+const MODE_LABEL = { scroll: "滚动", cover: "切换" };
 
 async function getReaderSettings() {
   return {
@@ -202,7 +202,7 @@ function parseBlocks(html) {
   return out;
 }
 
-// 单块超高：按直接子元素拆分，图片限高独立成页
+// 单块超高/放不下：优先拆子元素；纯文本块按字符二分切分填满页面（每页文字均匀）
 function splitBlock(blockHtml, pageH, measurer, pages, ci) {
   const doc = new DOMParser().parseFromString(blockHtml, "text/html");
   const root = doc.body.firstElementChild || doc.body;
@@ -213,18 +213,52 @@ function splitBlock(blockHtml, pageH, measurer, pages, ci) {
     measurer.innerHTML = sub.join("");
     const h0 = measurer.scrollHeight;
     let html = c.outerHTML;
-    if (c.tagName === "IMG") html = c.outerHTML.replace(/<img/i, `<img style="max-height:60vh"`).replace(/\/>$/, "/>");
+    if (c.tagName === "IMG") html = c.outerHTML.replace(/<img/i, '<img style="max-height:55vh"').replace(/\/>$/, "/>");
     measurer.innerHTML += html;
     if (measurer.scrollHeight <= pageH) { sub.push(html); continue; }
     flushSub();
     measurer.innerHTML = html;
-    if (measurer.scrollHeight <= pageH) sub.push(html);
-    else pages.push({ chapterIndex: ci, html }); // 仍超高（罕见）：整块放入
+    if (measurer.scrollHeight <= pageH) { sub.push(html); continue; }
+    // 单独也放不下：文本类元素按字符二分，尽量填满每页
+    if (/^(p|div|li|h[1-6]|blockquote|section|article)$/i.test(c.tagName) && c.textContent.trim().length > 4) {
+      let restHtml = html;
+      while (restHtml && restHtml.trim().length > 4) {
+        const fit = splitTextFit(restHtml, pageH, measurer);
+        if (!fit.first) break;
+        pages.push({ chapterIndex: ci, html: fit.first });
+        restHtml = fit.rest;
+      }
+      if (restHtml && restHtml.trim()) pages.push({ chapterIndex: ci, html: restHtml });
+    } else {
+      // 图片或其它非文本：限高独立成页
+      pages.push({ chapterIndex: ci, html });
+    }
   }
   flushSub();
 }
 
-// ============ 分页渲染与翻页 ============
+// 把一段 HTML 的文本按字符二分，返回能刚好放满一页的前缀与剩余部分
+function splitTextFit(html, pageH, measurer) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const root = doc.body.firstElementChild || doc.body;
+  const tag = root.tagName.toLowerCase();
+  const text = root.textContent;
+  if (text.length <= 2) return { first: null, rest: html };
+  let lo = 1, hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    measurer.innerHTML = `<${tag}>${escapeText(text.slice(0, mid))}</${tag}>`;
+    if (measurer.scrollHeight <= pageH) lo = mid; else hi = mid - 1;
+  }
+  if (lo < 2) return { first: null, rest: html };
+  return { first: `<${tag}>${escapeText(text.slice(0, lo))}</${tag}>`, rest: `<${tag}>${escapeText(text.slice(lo))}</${tag}>` };
+}
+
+function escapeText(t) {
+  return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ============ 分页渲染与翻页（无动画切换，参考开源阅读）============
 function renderPage(idx) {
   const vp = layer.querySelector(".page-viewport");
   if (!vp) return;
@@ -235,48 +269,12 @@ function renderPage(idx) {
 
 function turnPage(dir) {
   if (session.animLock) return;
-  const { mode, pages, pageIndex } = session;
+  const { pages, pageIndex } = session;
   const next = pageIndex + dir;
   if (next < 0 || next >= pages.length) return;
-  const anim = mode === "slide" ? "slide" : mode === "simulate" ? "flip" : "none";
-  const pad = padOf(session.settings);
-  if (anim === "none") { renderPage(next); updateAfterTurn(); return; }
-  const vp = layer.querySelector(".page-viewport");
-  const cur = h("div", { class: "page-cur", style: `padding-left:${pad};padding-right:${pad}` }, null);
-  cur.innerHTML = pages[pageIndex].html;
-  const nxt = h("div", { class: "page-next", style: `padding-left:${pad};padding-right:${pad}` }, null);
-  nxt.innerHTML = pages[next].html;
-  vp.innerHTML = "";
-  vp.appendChild(cur);
-  vp.appendChild(nxt);
-  session.animLock = true;
-  if (anim === "slide") {
-    nxt.style.transform = dir > 0 ? "translateX(100%)" : "translateX(-100%)";
-    void vp.offsetHeight; // 强制 reflow：确保初始状态先布局，transition 才会生效
-    cur.style.transition = "transform .35s cubic-bezier(.25,.8,.35,1)";
-    nxt.style.transition = "transform .35s cubic-bezier(.25,.8,.35,1)";
-    requestAnimationFrame(() => {
-      cur.style.transform = dir > 0 ? "translateX(-100%)" : "translateX(100%)";
-      nxt.style.transform = "translateX(0)";
-    });
-  } else { // flip 仿真：3D 翻页
-    vp.classList.add("flip-on");
-    nxt.style.transform = dir > 0 ? "rotateY(90deg)" : "rotateY(-90deg)";
-    void vp.offsetHeight;
-    cur.style.transition = "transform .5s cubic-bezier(.4,0,.3,1)";
-    nxt.style.transition = "transform .5s cubic-bezier(.4,0,.3,1)";
-    requestAnimationFrame(() => {
-      cur.style.transform = dir > 0 ? "rotateY(-90deg)" : "rotateY(90deg)";
-      nxt.style.transform = "rotateY(0deg)";
-    });
-  }
-  setTimeout(() => {
-    vp.classList.remove("flip-on");
-    session.pageIndex = next;
-    vp.innerHTML = `<div class="page-cur" style="padding-left:${pad};padding-right:${pad}">${pages[next].html}</div>`;
-    session.animLock = false;
-    updateAfterTurn();
-  }, anim === "slide" ? 380 : 520);
+  session.pageIndex = next;
+  renderPage(next);
+  updateAfterTurn();
 }
 
 function updateAfterTurn() {
@@ -898,7 +896,7 @@ function buildSettingsPanel(content) {
 
   const themeSeg = h("div", { class: "seg" }, themeBtn("day", "日用"), themeBtn("sepia", "护眼"), themeBtn("night", "夜间"));
   const marginSeg = h("div", { class: "seg" }, marginBtn("narrow", "窄"), marginBtn("normal", "标准"), marginBtn("wide", "宽"));
-  const modeSeg = h("div", { class: "seg" }, modeBtn("scroll", "滚动"), modeBtn("slide", "平滑"), modeBtn("simulate", "仿真"), modeBtn("cover", "切换"));
+  const modeSeg = h("div", { class: "seg" }, modeBtn("scroll", "滚动"), modeBtn("cover", "切换"));
 
   panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "字号"), h("div", { class: "rs-row" }, fontMinus, fontVal, fontPlus)));
   panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "行距"), h("div", { class: "rs-row" }, lineMinus, lineVal, linePlus)));
