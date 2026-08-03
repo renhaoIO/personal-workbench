@@ -1,5 +1,6 @@
-// 阅读器：全屏阅读界面 + 目录 + 书签 + 批注（荧光笔/下划线 多色）。
-// 富文本渲染（图片/粗体/斜体均在 innerHTML 中保留），阅读计时，进度自动保存。
+// 阅读器：全屏阅读界面 + 目录 + 书签 + 批注（荧光笔/下划线 多色）+ 四种翻页模式。
+// 翻页模式：scroll 连续滚动 / slide 平滑滑动 / simulate 仿真翻页 / cover 无动画切换。
+// 富文本渲染（图片/粗体/斜体保留），阅读计时，进度自动保存。
 import { db } from "../db.js";
 import { h, toast } from "../util.js";
 
@@ -12,6 +13,7 @@ const HL_COLORS = [
   { v: "#ffeb3b", n: "黄" }, { v: "#ff8a80", n: "红" }, { v: "#82b1ff", n: "蓝" },
   { v: "#b9f6ca", n: "绿" }, { v: "#ffe082", n: "橙" }, { v: "#b388ff", n: "紫" },
 ];
+const MODE_LABEL = { scroll: "滚动", slide: "平滑", simulate: "仿真", cover: "切换" };
 
 async function getReaderSettings() {
   return {
@@ -19,6 +21,7 @@ async function getReaderSettings() {
     line: (await db.getSetting("readerLine", 1.7)),
     theme: (await db.getSetting("readerTheme", "day")),
     margin: (await db.getSetting("readerMargin", "normal")),
+    mode: (await db.getSetting("readerMode", "scroll")),
   };
 }
 
@@ -32,6 +35,8 @@ function applyContentStyle(content, s) {
   if (layer) layer.className = "reader-layer theme-" + s.theme + (session && session.uiHidden ? " ui-hidden" : "");
 }
 
+function padOf(s) { return { narrow: "14px", normal: "22px", wide: "40px" }[s.margin] || "22px"; }
+
 // ============ 主入口 ============
 export async function openBook(id) {
   const book = await db.get("books", id);
@@ -43,9 +48,8 @@ export async function openBook(id) {
   const annotations = await db.getAll("annotations");
   document.body.classList.add("reading");
   session = { book, settings: s, lastFlush: Date.now(), acc: 0, raf: 0, bookmarks, annotations,
-    uiHidden: false, panel: null };
+    uiHidden: false, pages: [], pageIndex: 0, animLock: false, touchX: 0 };
 
-  // 顶栏
   const top = h("div", { class: "reader-top" },
     h("button", { class: "icon-btn", onclick: closeReader }, "←"),
     h("div", { class: "reader-title" }, book.title || "未命名"),
@@ -57,53 +61,47 @@ export async function openBook(id) {
     )
   );
 
-  // 内容区
-  const content = h("div", {});
-  renderContent(content, book, annotations);
-  applyContentStyle(content, s);
-
   const progText = h("div", { class: "reader-prog-text" }, Math.round((book.progress || 0) * 100) + "%");
   const chapText = h("div", { class: "reader-chap" }, "");
   const bottom = h("div", { class: "reader-bottom" },
-    h("button", { class: "reader-nav", onclick: () => gotoPrevChapter(content) }, "‹ 上一"),
+    h("button", { class: "reader-nav", onclick: () => gotoPrev() }, "‹ 上一"),
     h("div", { class: "reader-center" }, chapText, progText),
-    h("button", { class: "reader-nav", onclick: () => gotoNextChapter(content) }, "下一 ›")
+    h("button", { class: "reader-nav", onclick: () => gotoNext() }, "下一 ›")
   );
 
-  // 点击分区翻页（有活动选区时不翻页，避免长按选中文字后误翻页）
-  content.addEventListener("click", (e) => {
-    if (session.uiHidden) { toggleUI(true); return; }
-    // 有活动选区：可能是长按选字后的点击，只收起工具栏、不翻页
-    if (hasActiveSelection()) { hideAnnoBar(); return; }
-    // 工具栏显示时点击内容 → 收起
-    if (annoBar && annoBar.style.display !== "none") { hideAnnoBar(); return; }
-    const y = e.clientY;
-    const h2 = window.innerHeight / 2;
-    if (y < h2 * 0.62) content.scrollBy({ top: -window.innerHeight * 0.9, behavior: "smooth" });
-    else if (y > h2 * 1.38) content.scrollBy({ top: window.innerHeight * 0.9, behavior: "smooth" });
-    else toggleUI();
-  });
+  // 内容区：按翻页模式构建
+  const content = buildContentArea(s);
 
-  // 选中文字 → 弹出批注工具栏（selectionchange 对手机长按/PC 拖动都可靠，防抖后显示）
+  // 点击分区
+  content.addEventListener("click", onContentClick);
+
+  // 触摸滑动（分页模式翻页手势）
+  content.addEventListener("touchstart", (e) => { session.touchX = e.touches[0].clientX; }, { passive: true });
+  content.addEventListener("touchend", (e) => {
+    if (session.settings.mode === "scroll") return;
+    const dx = e.changedTouches[0].clientX - session.touchX;
+    if (Math.abs(dx) > 50) turnPage(dx < 0 ? 1 : -1);
+  }, { passive: true });
+
   document.addEventListener("selectionchange", onSelectionChange);
-  // PC 右键选中兜底：阻止系统菜单，直接弹我们的工具栏
   content.addEventListener("contextmenu", (e) => {
     if (hasActiveSelection()) { e.preventDefault(); checkSelection(); }
   });
 
-  // 滚动：更新进度 + 章节名（不因滚动隐藏批注工具栏——点颜色时系统菜单弹出常伴随滚动，
-  // 若此时因选区被清空而隐藏，工具栏会在操作中被误关）
-  content.addEventListener("scroll", () => {
-    if (session.raf) return;
-    session.raf = requestAnimationFrame(() => {
-      session.raf = 0;
-      const frac = content.scrollHeight > content.clientHeight
-        ? content.scrollTop / (content.scrollHeight - content.clientHeight) : 1;
-      session.book.progress = Math.max(0, Math.min(1, frac));
-      progText.textContent = Math.round(session.book.progress * 100) + "%";
-      updateChapterName(content, chapText);
-    });
-  }, { passive: true });
+  // 滚动模式：滚动更新进度/章节名
+  if (session.settings.mode === "scroll") {
+    content.addEventListener("scroll", () => {
+      if (session.raf) return;
+      session.raf = requestAnimationFrame(() => {
+        session.raf = 0;
+        const frac = content.scrollHeight > content.clientHeight
+          ? content.scrollTop / (content.scrollHeight - content.clientHeight) : 1;
+        session.book.progress = Math.max(0, Math.min(1, frac));
+        progText.textContent = Math.round(session.book.progress * 100) + "%";
+        updateChapterName(content, chapText);
+      });
+    }, { passive: true });
+  }
 
   layer = h("div", { class: "reader-layer" }, top, content, bottom,
     buildSettingsPanel(content), buildTOCPanel(content), buildBookmarkPanel(content), buildAnnoPanel(content));
@@ -111,37 +109,243 @@ export async function openBook(id) {
 
   // 定位到上次进度
   requestAnimationFrame(() => {
-    const target = (book.progress || 0) * (content.scrollHeight - content.clientHeight);
-    content.scrollTop = Math.max(0, target || 0);
-    updateChapterName(content, chapText);
+    if (session.settings.mode === "scroll") {
+      const target = (book.progress || 0) * (content.scrollHeight - content.clientHeight);
+      content.scrollTop = Math.max(0, target || 0);
+      updateChapterName(content, chapText);
+    } else {
+      session.pages = buildPages(session.settings);
+      if (!session.pages.length) session.pages = [{ chapterIndex: 0, html: "<p>（空书）</p>" }];
+      session.pageIndex = Math.max(0, Math.min(session.pages.length - 1,
+        Math.round((book.progress || 0) * (session.pages.length - 1))));
+      renderPage(session.pageIndex);
+      updatePageInfo(progText, chapText);
+    }
   });
 
-  // 计时与自动保存
   session.flushTimer = setInterval(flush, 15000);
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("beforeunload", flush);
 }
 
-// ============ 内容渲染 ============
-function renderContent(content, book, annotations) {
-  const bookAnnos = annotations.filter((a) => a.bookId === book.id);
-  content.innerHTML = book.chapters.map((c, i) => {
-    let html = c.html;
-    // 批量应用该章节所有批注
-    const chapAnnos = bookAnnos.filter((a) => a.chapterIndex === i);
-    // 按文本长度倒序（长文本先匹配，避免短段匹配到长段内部被重复包裹干扰）
-    chapAnnos.sort((a, b) => (b.selectedText || "").length - (a.selectedText || "").length);
-    for (const a of chapAnnos) {
-      html = applyAnnotation(html, a);
+// 构建内容区：滚动模式=可滚动容器；分页模式=视口容器
+function buildContentArea(s) {
+  if (s.mode === "scroll") {
+    const content = h("div", {});
+    renderContent(content, session.book, session.annotations);
+    applyContentStyle(content, s);
+    return content;
+  }
+  const vp = h("div", { class: "page-viewport r-theme-" + s.theme });
+  vp.style.fontSize = s.font + "px";
+  vp.style.lineHeight = s.line;
+  return vp;
+}
+
+// ============ 分页引擎 ============
+function buildPages(s) {
+  const { book } = session;
+  const vw = layer.clientWidth, vh = layer.clientHeight;
+  const pad = padOf(s);
+  const pageW = Math.max(200, vw - pad * 2);
+  const pageH = Math.max(200, vh - 18 - 40);
+
+  // 测量容器（与真实页同宽同样式，隐藏）
+  const measurer = document.createElement("div");
+  measurer.style.cssText = `position:fixed;left:-10000px;top:0;visibility:hidden;width:${vw}px;font-size:${s.font}px;line-height:${s.line};padding-left:${pad}px;padding-right:${pad}px;`;
+  measurer.className = "r-theme-" + s.theme;
+  document.body.appendChild(measurer);
+
+  const pages = [];
+  let cur = [];
+  const flush = () => { if (cur.length) { pages.push({ chapterIndex: cur[0].ci, html: cur.map((b) => b.html).join("") }); cur = []; } };
+
+  book.chapters.forEach((ch, ci) => {
+    const html = annotateChapter(ch.html, book.id, ci, session.annotations);
+    const blocks = parseBlocks(html);
+    for (const b of blocks) {
+      measurer.innerHTML = cur.map((x) => x.html).join("");
+      const h0 = measurer.scrollHeight;
+      measurer.innerHTML += b;
+      if (measurer.scrollHeight <= pageH) { cur.push({ ci, html: b }); continue; }
+      // 放不下
+      if (cur.length) { flush(); measurer.innerHTML = b; if (measurer.scrollHeight <= pageH) { cur.push({ ci, html: b }); continue; } }
+      // 单块超高：拆子元素
+      splitBlock(b, pageH, measurer, pages, ci);
     }
-    return `<div class="reader-chapter" data-chapter="${i}">${html}</div>`;
-  }).join("");
+  });
+  flush();
+  measurer.remove();
+  return pages;
+}
+
+// 解析章节 HTML 为顶层块数组（保留标签结构）
+function parseBlocks(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const body = doc.body || doc.documentElement;
+  const out = [];
+  const walk = (node) => {
+    for (const el of node.children) {
+      out.push(el.outerHTML);
+      // 顶层容器（如 div）内的直接块级子元素也单独拆出
+      if (el.children.length && /^div$/i.test(el.tagName)) {
+        out.pop();
+        walk(el);
+      }
+    }
+  };
+  walk(body);
+  if (!out.length && body.textContent.trim()) out.push(body.innerHTML);
+  return out;
+}
+
+// 单块超高：按直接子元素拆分，图片限高独立成页
+function splitBlock(blockHtml, pageH, measurer, pages, ci) {
+  const doc = new DOMParser().parseFromString(blockHtml, "text/html");
+  const root = doc.body.firstElementChild || doc.body;
+  const children = root.children && root.children.length ? [...root.children] : [root];
+  let sub = [];
+  const flushSub = () => { if (sub.length) { pages.push({ chapterIndex: ci, html: sub.join("") }); sub = []; } };
+  for (const c of children) {
+    measurer.innerHTML = sub.join("");
+    const h0 = measurer.scrollHeight;
+    let html = c.outerHTML;
+    if (c.tagName === "IMG") html = c.outerHTML.replace(/<img/i, `<img style="max-height:60vh"`).replace(/\/>$/, "/>");
+    measurer.innerHTML += html;
+    if (measurer.scrollHeight <= pageH) { sub.push(html); continue; }
+    flushSub();
+    measurer.innerHTML = html;
+    if (measurer.scrollHeight <= pageH) sub.push(html);
+    else pages.push({ chapterIndex: ci, html }); // 仍超高（罕见）：整块放入
+  }
+  flushSub();
+}
+
+// ============ 分页渲染与翻页 ============
+function renderPage(idx) {
+  const vp = layer.querySelector(".page-viewport");
+  if (!vp) return;
+  const pad = padOf(session.settings);
+  vp.innerHTML = `<div class="page-cur" style="padding-left:${pad};padding-right:${pad}">${session.pages[idx].html}</div>`;
+  session.pageIndex = idx;
+}
+
+function turnPage(dir) {
+  if (session.animLock) return;
+  const { mode, pages, pageIndex } = session;
+  const next = pageIndex + dir;
+  if (next < 0 || next >= pages.length) return;
+  const anim = mode === "slide" ? "slide" : mode === "simulate" ? "flip" : "none";
+  const pad = padOf(session.settings);
+  if (anim === "none") { renderPage(next); updateAfterTurn(); return; }
+  const vp = layer.querySelector(".page-viewport");
+  const cur = h("div", { class: "page-cur", style: `padding-left:${pad};padding-right:${pad}` }, null);
+  cur.innerHTML = pages[pageIndex].html;
+  const nxt = h("div", { class: "page-next", style: `padding-left:${pad};padding-right:${pad}` }, null);
+  nxt.innerHTML = pages[next].html;
+  vp.innerHTML = "";
+  vp.appendChild(cur);
+  vp.appendChild(nxt);
+  session.animLock = true;
+  if (anim === "slide") {
+    nxt.style.transform = dir > 0 ? "translateX(100%)" : "translateX(-100%)";
+    cur.style.transition = "transform .3s ease";
+    nxt.style.transition = "transform .3s ease";
+    requestAnimationFrame(() => {
+      cur.style.transform = dir > 0 ? "translateX(-100%)" : "translateX(100%)";
+      nxt.style.transform = "translateX(0)";
+    });
+  } else { // flip 仿真：3D 翻页
+    vp.classList.add("flip-on");
+    nxt.style.transform = dir > 0 ? "rotateY(90deg)" : "rotateY(-90deg)";
+    cur.style.transition = "transform .45s ease";
+    nxt.style.transition = "transform .45s ease";
+    requestAnimationFrame(() => {
+      cur.style.transform = dir > 0 ? "rotateY(-90deg)" : "rotateY(90deg)";
+      nxt.style.transform = "rotateY(0deg)";
+    });
+  }
+  setTimeout(() => {
+    vp.classList.remove("flip-on");
+    session.pageIndex = next;
+    vp.innerHTML = `<div class="page-cur" style="padding-left:${pad};padding-right:${pad}">${pages[next].html}</div>`;
+    session.animLock = false;
+    updateAfterTurn();
+  }, anim === "slide" ? 320 : 470);
+}
+
+function updateAfterTurn() {
+  const progText = layer.querySelector(".reader-prog-text");
+  const chapText = layer.querySelector(".reader-chap");
+  updatePageInfo(progText, chapText);
+}
+
+function updatePageInfo(progText, chapText) {
+  if (!layer) return;
+  const { pages, pageIndex, book } = session;
+  if (!pages.length) return;
+  session.book.progress = pages.length > 1 ? pageIndex / (pages.length - 1) : 0;
+  if (progText) progText.textContent = Math.round(session.book.progress * 100) + "%";
+  const ci = pages[pageIndex].chapterIndex;
+  const ch = book.chapters[ci];
+  if (chapText) chapText.textContent = ch ? ch.title : "";
+}
+
+function gotoPrev() {
+  if (session.settings.mode === "scroll") gotoScrollDir(-1);
+  else turnPage(-1);
+}
+function gotoNext() {
+  if (session.settings.mode === "scroll") gotoScrollDir(1);
+  else turnPage(1);
+}
+function gotoScrollDir(dir) {
+  const content = layer.querySelector(".reader-content");
+  if (!content) return;
+  const heads = [...content.querySelectorAll(".reader-chapter")];
+  if (!heads.length) return;
+  const ci = currentChapterIndex(content);
+  if (dir > 0 && ci < heads.length - 1) heads[ci + 1].scrollIntoView({ behavior: "smooth", block: "start" });
+  else if (dir < 0 && ci > 0) heads[ci - 1].scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function onContentClick(e) {
+  if (session.uiHidden) { toggleUI(true); return; }
+  if (hasActiveSelection()) { hideAnnoBar(); return; }
+  if (annoBar && annoBar.style.display !== "none") { hideAnnoBar(); return; }
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    const y = e.clientY;
+    const h2 = window.innerHeight / 2;
+    if (y < h2 * 0.62) content.scrollBy({ top: -window.innerHeight * 0.9, behavior: "smooth" });
+    else if (y > h2 * 1.38) content.scrollBy({ top: window.innerHeight * 0.9, behavior: "smooth" });
+    else toggleUI();
+    return;
+  }
+  // 分页模式：左 1/3 上一页，右 1/3 下一页，中间 UI
+  const w = window.innerWidth / 3;
+  if (e.clientX < w) turnPage(-1);
+  else if (e.clientX > w * 2) turnPage(1);
+  else toggleUI();
+}
+
+// ============ 内容渲染 ============
+function annotateChapter(html, bookId, chapterIndex, annotations) {
+  const chapAnnos = annotations.filter((a) => a.bookId === bookId && a.chapterIndex === chapterIndex)
+    .sort((a, b) => (b.selectedText || "").length - (a.selectedText || "").length);
+  let out = html;
+  for (const a of chapAnnos) out = applyAnnotation(out, a);
+  return out;
+}
+
+function renderContent(content, book, annotations) {
+  content.innerHTML = book.chapters.map((c, i) =>
+    `<div class="reader-chapter" data-chapter="${i}">${annotateChapter(c.html, book.id, i, annotations)}</div>`).join("");
 }
 
 function applyAnnotation(html, a) {
   const cls = a.type === "highlight" ? "anno-hl" : "anno-ul";
   const text = a.selectedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // 只替换不在标签内的文本
   const re = new RegExp(`(${text})(?![^<]*>)`, "g");
   return html.replace(re, `<span class="${cls}" style="--anno-color:${a.color}">$1</span>`);
 }
@@ -150,13 +354,10 @@ function applyAnnotation(html, a) {
 function buildTOCPanel(content) {
   const panel = h("div", { class: "reader-toc" });
   panel.style.display = "none";
-  const back = h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "←");
-  panel.appendChild(back);
+  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "←"));
   const list = h("div", { class: "toc-list" });
-  const chapters = session.book.chapters;
-  if (!chapters.length) list.appendChild(h("div", { class: "muted", style: "padding:12px;" }, "暂无目录"));
-  else chapters.forEach((c, i) => {
-    const item = h("div", { class: "toc-item", onclick: () => { scrollToChapter(content, i); closePanel(); } },
+  session.book.chapters.forEach((c, i) => {
+    const item = h("div", { class: "toc-item", onclick: () => { jumpToChapter(i); closePanel(); } },
       h("span", { class: "toc-num" }, String(i + 1)),
       h("span", { class: "toc-title" }, c.title || `第 ${i + 1} 节`)
     );
@@ -167,13 +368,30 @@ function buildTOCPanel(content) {
 }
 
 function toggleTOC() { openPanel("reader-toc"); }
-function toggleBookmarks() { openPanel("reader-bookmarks"); refreshBookmarkList(); }
+
+function jumpToChapter(ci) {
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    const el = content && content.querySelector(`.reader-chapter[data-chapter="${ci}"]`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  // 分页模式：找该章节第一页
+  const idx = session.pages.findIndex((p) => p.chapterIndex === ci);
+  if (idx >= 0) turnToPage(idx);
+}
+
+function turnToPage(idx) {
+  if (session.animLock) return;
+  session.pageIndex = Math.max(0, Math.min(session.pages.length - 1, idx));
+  renderPage(session.pageIndex);
+  updateAfterTurn();
+}
 
 function openPanel(cls) {
   const existing = layer.querySelector("." + cls);
   if (!existing) return;
   const visible = existing.style.display !== "none";
-  // 关闭所有面板
   layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings,.reader-annotations").forEach((p) => p.style.display = "none");
   hideAnnoBar();
   closeAnnoEditor();
@@ -183,17 +401,14 @@ function closePanel() {
   layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings,.reader-annotations").forEach((p) => p.style.display = "none");
 }
 
-function scrollToChapter(content, idx) {
-  const el = content.querySelector(`.reader-chapter[data-chapter="${idx}"]`);
-  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
 // ============ 书签面板 ============
+function toggleBookmarks() { openPanel("reader-bookmarks"); refreshBookmarkList(); }
+
 function buildBookmarkPanel(content) {
   const panel = h("div", { class: "reader-bookmarks" });
   panel.style.display = "none";
-  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "✕"));
-  panel.appendChild(h("button", { class: "btn block", style: "margin-bottom:12px;", onclick: () => addBookmark(content) }, "＋ 添加当前位置书签"));
+  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "←"));
+  panel.appendChild(h("button", { class: "btn block", style: "margin-bottom:12px;", onclick: () => addBookmark() }, "＋ 添加当前位置书签"));
   const list = h("div", { class: "bm-list" });
   list.id = "bm-list";
   panel.appendChild(list);
@@ -220,18 +435,23 @@ function refreshBookmarkList() {
   });
 }
 
-async function addBookmark(content) {
-  const ci = currentChapterIndex(content);
-  const frac = scrollFraction(content);
+function currentPosition() {
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    const ci = content ? currentChapterIndex(content) : 0;
+    return { ci, frac: content ? scrollFraction(content) : 0 };
+  }
+  const ci = session.pages.length ? session.pages[session.pageIndex].chapterIndex : 0;
+  return { ci, frac: session.pages.length > 1 ? session.pageIndex / (session.pages.length - 1) : 0 };
+}
+
+async function addBookmark() {
+  const { ci, frac } = currentPosition();
   const ch = session.book.chapters[ci];
   const title = (ch ? ch.title : "") || `第 ${ci + 1} 章`;
   const bm = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    bookId: session.book.id,
-    chapterIndex: ci,
-    fraction: frac,
-    title,
-    createdAt: Date.now(),
+    bookId: session.book.id, chapterIndex: ci, fraction: frac, title, createdAt: Date.now(),
   };
   await db.put("bookmarks", bm);
   session.bookmarks.push(bm);
@@ -239,7 +459,6 @@ async function addBookmark(content) {
   refreshBookmarkList();
 }
 
-// 书签删除：阅读界面内两段式确认（✕ → 删除/取消），避免弹出被阅读器遮挡的全局弹窗
 function confirmRemoveBookmark(item, bm) {
   if (item.classList.contains("confirming")) return;
   item.classList.add("confirming");
@@ -250,7 +469,7 @@ function confirmRemoveBookmark(item, bm) {
     h("button", { class: "bm-del-btn yes", onclick: (ev) => { ev.stopPropagation(); doRemoveBookmark(item, bm); } }, "删除"),
     h("button", { class: "bm-del-btn no", onclick: (ev) => { ev.stopPropagation(); refreshBookmarkList(); } }, "取消")
   ));
-  item._confirmTimer = setTimeout(() => refreshBookmarkList(), 4000); // 超时自动还原
+  item._confirmTimer = setTimeout(() => refreshBookmarkList(), 4000);
 }
 
 async function doRemoveBookmark(item, bm) {
@@ -261,13 +480,25 @@ async function doRemoveBookmark(item, bm) {
   refreshBookmarkList();
 }
 
+function jumpToBookmark(bm) {
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    if (!content) return;
+    const target = (bm.fraction || 0) * (content.scrollHeight - content.clientHeight);
+    content.scrollTop = Math.max(0, target);
+    return;
+  }
+  const idx = session.pages.findIndex((p) => p.chapterIndex === bm.chapterIndex);
+  if (idx >= 0) turnToPage(idx);
+}
+
 // ============ 批注总览面板 ============
 function toggleAnnotations() { openPanel("reader-annotations"); refreshAnnoList(); }
 
 function buildAnnoPanel(content) {
   const panel = h("div", { class: "reader-annotations" });
   panel.style.display = "none";
-  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "✕"));
+  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "←"));
   const list = h("div", { class: "anno-list" });
   list.id = "anno-list";
   panel.appendChild(list);
@@ -280,7 +511,6 @@ function refreshAnnoList() {
   list.innerHTML = "";
   const annos = session.annotations.filter((a) => a.bookId === session.book.id);
   if (!annos.length) { list.appendChild(h("div", { class: "muted", style: "padding:12px;" }, "暂无批注")); return; }
-  // 按章节分组
   const groups = {};
   annos.forEach((a) => { const k = a.chapterIndex; if (!groups[k]) groups[k] = []; groups[k].push(a); });
   Object.keys(groups).sort((a, b) => a - b).forEach((ci) => {
@@ -294,37 +524,43 @@ function refreshAnnoList() {
         h("span", { class: "anno-note-text", title: a.note || "", onclick: (ev) => { ev.stopPropagation(); editAnnoNote(a, item); } }, a.note || "＋笔记"),
         h("button", { class: "icon-btn", style: "font-size:13px;width:28px;height:28px;", title: "删除", onclick: (ev) => { ev.stopPropagation(); confirmRemoveAnno(a, item); } }, "✕")
       );
-      item.addEventListener("click", () => {
-        // 点击批注：打开详情弹窗（查看/修改笔记、删除）+ 正文滚动到批注位置
-        openAnnoEditor(a);
-        jumpToAnno(a);
-        closePanel();
-      });
+      item.addEventListener("click", () => { openAnnoEditor(a); jumpToAnno(a); closePanel(); });
       list.appendChild(item);
     });
   });
 }
 
 function jumpToAnno(a) {
-  const content = layer.querySelector(".reader-content");
-  if (!content) return;
-  const ch = content.querySelector(`.reader-chapter[data-chapter="${a.chapterIndex}"]`);
-  if (!ch) { toast("未找到章节"); return; }
-  // 在章节内定位批注文本的精确位置
-  const range = findTextRange(ch, a.selectedText);
-  if (range) {
-    // 基于 range 与 content 的视口坐标差值计算滚动位置（不依赖 offsetTop，offsetTop 相对祖先不可靠）
-    const rect = range.getBoundingClientRect();
-    const contentRect = content.getBoundingClientRect();
-    const target = content.scrollTop + (rect.top - contentRect.top) - 60;
-    content.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
-    flashAnno(range);
-  } else {
-    ch.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    if (!content) return;
+    const ch = content.querySelector(`.reader-chapter[data-chapter="${a.chapterIndex}"]`);
+    if (!ch) return;
+    const range = findTextRange(ch, a.selectedText);
+    if (range) {
+      const rect = range.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      const target = content.scrollTop + (rect.top - contentRect.top) - 60;
+      content.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+      flashAnno(range);
+    } else {
+      ch.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    return;
   }
+  // 分页模式：找包含批注文本的页
+  let idx = session.pages.findIndex((p) => p.chapterIndex === a.chapterIndex && p.html.includes(a.selectedText));
+  if (idx < 0) idx = session.pages.findIndex((p) => p.chapterIndex === a.chapterIndex);
+  if (idx >= 0) { turnToPage(idx); setTimeout(() => flashPageAnno(a), 350); }
 }
 
-// 在 root 内查找 target 文本的位置（跨文本节点，兼容批注 span 包裹后节点结构变化）
+function flashPageAnno(a) {
+  const cur = layer.querySelector(".page-cur");
+  if (!cur) return;
+  const range = findTextRange(cur, a.selectedText);
+  if (range) flashAnno(range);
+}
+
 function findTextRange(root, target) {
   const t = (target || "").trim();
   if (!t) return null;
@@ -332,10 +568,7 @@ function findTextRange(root, target) {
   const nodes = [];
   let full = "";
   let node;
-  while ((node = walker.nextNode())) {
-    nodes.push(node);
-    full += node.textContent;
-  }
+  while ((node = walker.nextNode())) { nodes.push(node); full += node.textContent; }
   const idx = full.indexOf(t);
   if (idx < 0) return null;
   let pos = 0;
@@ -353,7 +586,6 @@ function findTextRange(root, target) {
   return null;
 }
 
-// 跳转后闪烁提示批注位置
 function flashAnno(range) {
   let el = range.startContainer.parentElement;
   while (el && el !== layer && !el.classList.contains("anno-hl") && !el.classList.contains("anno-ul")) {
@@ -365,7 +597,6 @@ function flashAnno(range) {
   }
 }
 
-// 编辑批注笔记
 function editAnnoNote(a, item) {
   const span = item.querySelector(".anno-note-text");
   if (!span || span.querySelector("input")) return;
@@ -382,18 +613,10 @@ function editAnnoNote(a, item) {
   input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } });
 }
 
-// 删除批注
 async function doRemoveAnno(a) {
   await db.del("annotations", a.id);
   session.annotations = session.annotations.filter((x) => x.id !== a.id);
-  // 重新渲染（去掉标注样式）
-  const content = layer.querySelector(".reader-content");
-  if (content) {
-    const st = content.scrollTop;
-    renderContent(content, session.book, session.annotations);
-    applyContentStyle(content, session.settings);
-    content.scrollTop = st;
-  }
+  rerenderAnnotated();
   toast("已删除批注");
   refreshAnnoList();
 }
@@ -411,15 +634,24 @@ function confirmRemoveAnno(a, item) {
   item._confirmT = setTimeout(() => refreshAnnoList(), 4000);
 }
 
-function jumpToBookmark(bm) {
-  const content = layer.querySelector(".reader-content");
+// 批注增删改后重渲染（滚动保持位置；分页重分页跳到原章节）
+function rerenderAnnotated() {
+  const content = layer.querySelector(".reader-content") || layer.querySelector(".page-viewport");
   if (!content) return;
-  const target = (bm.fraction || 0) * (content.scrollHeight - content.clientHeight);
-  content.scrollTop = Math.max(0, target);
+  const ci = session.settings.mode === "scroll" ? currentChapterIndex(content) : session.pages[session.pageIndex]?.chapterIndex || 0;
+  const st = session.settings.mode === "scroll" ? content.scrollTop : 0;
+  if (session.settings.mode === "scroll") {
+    renderContent(content, session.book, session.annotations);
+    applyContentStyle(content, session.settings);
+    content.scrollTop = st;
+  } else {
+    session.pages = buildPages(session.settings);
+    const idx = session.pages.findIndex((p) => p.chapterIndex === ci);
+    turnToPage(idx >= 0 ? idx : session.pageIndex);
+  }
 }
 
 // ============ 批注工具栏 ============
-// 是否在阅读内容区内有一段有效的文字选区
 function hasActiveSelection() {
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return false;
@@ -435,8 +667,6 @@ function onSelectionChange() {
 }
 
 function checkSelection() {
-  // 只负责显示工具栏，不负责隐藏（点击内容/标注完成/滚动才隐藏），
-  // 彻底避免点颜色/标注按钮时选区被浏览器清空导致工具栏误关
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) return;
   const text = sel.toString().trim();
@@ -451,27 +681,20 @@ function checkSelection() {
 function showAnnoBar(rect, text) {
   if (!annoBar) {
     annoBar = h("div", { class: "anno-bar" });
-    // 荧光笔按钮
     const hlBtn = h("button", { class: "anno-type", title: "荧光笔" }, "");
     hlBtn.addEventListener("click", () => {
-      const all = annoBar.querySelectorAll(".anno-type");
-      all.forEach((b) => b.classList.remove("on"));
+      annoBar.querySelectorAll(".anno-type").forEach((b) => b.classList.remove("on"));
       hlBtn.classList.add("on");
       annoBar.dataset.mode = "highlight";
     });
     hlBtn.classList.add("on");
     annoBar.dataset.mode = "highlight";
-
-    // 下划线按钮
     const ulBtn = h("button", { class: "anno-type", title: "下划线" }, "U");
     ulBtn.addEventListener("click", () => {
-      const all = annoBar.querySelectorAll(".anno-type");
-      all.forEach((b) => b.classList.remove("on"));
+      annoBar.querySelectorAll(".anno-type").forEach((b) => b.classList.remove("on"));
       ulBtn.classList.add("on");
       annoBar.dataset.mode = "underline";
     });
-
-    // 颜色色块
     const colorsRow = h("div", { class: "anno-colors" });
     HL_COLORS.forEach((c, i) => {
       const dot = h("span", { class: "anno-color" + (i === 0 ? " on" : ""), style: `background:${c.v}`, title: c.n });
@@ -483,10 +706,7 @@ function showAnnoBar(rect, text) {
       colorsRow.appendChild(dot);
     });
     annoBar.dataset.color = HL_COLORS[0].v;
-
-    // 快速标注（无笔记）
     const okBtn = h("button", { class: "anno-apply", onclick: () => applyAnnotationFromBar() }, "标注");
-    // 写笔记 → 弹出独立编辑界面（Jane Reader 风格）
     const noteBtn = h("button", { class: "anno-note-btn", title: "写笔记", onclick: () => openAnnoEditor() }, "📝 笔记");
     annoBar.appendChild(hlBtn);
     annoBar.appendChild(ulBtn);
@@ -499,12 +719,51 @@ function showAnnoBar(rect, text) {
   annoBar.text = text;
 }
 
-// ============ 笔记编辑器（Jane Reader 风格底部弹窗；anno 为空=新建，否则=编辑已有批注）============
+function hideAnnoBar() {
+  if (annoBar) annoBar.style.display = "none";
+}
+
+async function applyAnnotationFromBar() {
+  if (!annoBar) return;
+  const text = annoBar.text;
+  if (!text) return;
+  const mode = annoBar.dataset.mode || "highlight";
+  const color = annoBar.dataset.color || "#ffeb3b";
+  const note = "";
+  const ci = currentAnnoChapter();
+  const dup = session.annotations.find(
+    (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
+      a.selectedText === text && a.type === mode && a.color === color
+  );
+  if (dup) { toast("该批注已存在"); hideAnnoBar(); return; }
+  const anno = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    bookId: session.book.id, chapterIndex: ci, selectedText: text,
+    type: mode, color, note, createdAt: Date.now(),
+  };
+  await db.put("annotations", anno);
+  session.annotations.push(anno);
+  hideAnnoBar();
+  annoBar.text = null;
+  window.getSelection()?.removeAllRanges();
+  rerenderAnnotated();
+  toast(mode === "highlight" ? "荧光笔标注" : "下划线标注");
+}
+
+function currentAnnoChapter() {
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    return content ? currentChapterIndex(content) : 0;
+  }
+  return session.pages[session.pageIndex]?.chapterIndex || 0;
+}
+
+// ============ 笔记编辑器（Jane Reader 风格底部弹窗）============
 function openAnnoEditor(anno) {
   const isEdit = !!anno;
   const text = isEdit ? anno.selectedText : (annoBar && annoBar.text);
   if (!text) { toast("请先选中文字"); return; }
-  closeAnnoEditor(); // 防止重复
+  closeAnnoEditor();
   const mode = isEdit ? anno.type : (annoBar.dataset.mode || "highlight");
   const color = isEdit ? anno.color : (annoBar.dataset.color || HL_COLORS[0].v);
 
@@ -513,27 +772,21 @@ function openAnnoEditor(anno) {
   sheet.dataset.mode = mode;
   sheet.dataset.color = color;
 
-  // 标题
   sheet.appendChild(h("div", { class: "ae-head" },
     h("div", { class: "ae-title" }, isEdit ? "批注详情" : "笔记"),
     h("button", { class: "icon-btn", style: "width:30px;height:30px;", onclick: closeAnnoEditor }, "✕")
   ));
-
-  // 引用文字
   sheet.appendChild(h("div", { class: "ae-quote" },
     h("div", { class: "ae-label" }, "引用"),
     h("div", { class: "ae-quote-text" }, text)
   ));
 
-  // 标注类型分段
-  const typeSeg = h("div", { class: "seg" },
-    segBtn("highlight", "荧光笔"), segBtn("underline", "下划线"));
+  const typeSeg = h("div", { class: "seg" }, segBtn("highlight", "荧光笔"), segBtn("underline", "下划线"));
   sheet.appendChild(h("div", { class: "ae-label" }, "标注类型"));
   sheet.appendChild(typeSeg);
 
-  // 颜色
   const colorsRow = h("div", { class: "anno-colors", style: "margin-top:8px;" });
-  HL_COLORS.forEach((c, i) => {
+  HL_COLORS.forEach((c) => {
     const dot = h("span", { class: "anno-color" + (c.v === color ? " on" : ""), style: `background:${c.v}`, title: c.n });
     dot.addEventListener("click", () => {
       colorsRow.querySelectorAll(".anno-color").forEach((d) => d.classList.remove("on"));
@@ -544,13 +797,11 @@ function openAnnoEditor(anno) {
   });
   sheet.appendChild(colorsRow);
 
-  // 笔记正文
   sheet.appendChild(h("div", { class: "ae-label", style: "margin-top:14px;" }, "我的笔记"));
   const note = h("textarea", { class: "ae-note", placeholder: "写下你的想法…", rows: 4 });
   if (isEdit && anno.note) note.value = anno.note;
   sheet.appendChild(note);
 
-  // 按钮：编辑模式带删除
   const btns = h("div", { class: "row", style: "gap:10px;margin-top:14px;" },
     isEdit ? h("button", { class: "btn danger", style: "flex:1", onclick: () => delAnnoFromEditor(anno) }, "删除") : null,
     h("button", { class: "btn ghost", style: "flex:1", onclick: closeAnnoEditor }, "取消"),
@@ -584,28 +835,20 @@ async function saveAnnoFromEditor(targetAnno) {
   const mode = sheet.dataset.mode || "highlight";
   const color = sheet.dataset.color || HL_COLORS[0].v;
   const note = (sheet.querySelector(".ae-note")?.value || "").trim();
-  const content = layer.querySelector(".reader-content");
-  if (!content) return;
 
   if (targetAnno) {
-    // 编辑已有批注：更新类型/颜色/笔记并重渲染
     targetAnno.type = mode;
     targetAnno.color = color;
     targetAnno.note = note;
     await db.put("annotations", targetAnno);
     closeAnnoEditor();
-    const st = content.scrollTop;
-    renderContent(content, session.book, session.annotations);
-    applyContentStyle(content, session.settings);
-    content.scrollTop = st;
+    rerenderAnnotated();
     toast("批注已更新");
     return;
   }
-
-  // 新建
   const text = annoBar ? annoBar.text : "";
   if (!text) { toast("未选中文字"); closeAnnoEditor(); return; }
-  const ci = currentChapterIndex(content);
+  const ci = currentAnnoChapter();
   const dup = session.annotations.find(
     (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
       a.selectedText === text && a.type === mode && a.color === color
@@ -622,10 +865,7 @@ async function saveAnnoFromEditor(targetAnno) {
   hideAnnoBar();
   annoBar.text = null;
   window.getSelection()?.removeAllRanges();
-  const st = content.scrollTop;
-  renderContent(content, session.book, session.annotations);
-  applyContentStyle(content, session.settings);
-  content.scrollTop = st;
+  rerenderAnnotated();
   toast(note ? "已保存批注笔记" : "已保存批注");
 }
 
@@ -633,67 +873,178 @@ async function delAnnoFromEditor(anno) {
   await db.del("annotations", anno.id);
   session.annotations = session.annotations.filter((x) => x.id !== anno.id);
   closeAnnoEditor();
-  const content = layer.querySelector(".reader-content");
-  if (content) {
-    const st = content.scrollTop;
-    renderContent(content, session.book, session.annotations);
-    applyContentStyle(content, session.settings);
-    content.scrollTop = st;
-  }
+  rerenderAnnotated();
   toast("已删除批注");
   refreshAnnoList();
 }
 
+// ============ 设置面板 ============
+function buildSettingsPanel(content) {
+  const panel = h("div", { class: "reader-settings" });
+  panel.style.display = "none";
 
-// 只隐藏不清空 text：手机上点击"标注"按钮时选区先被浏览器清空，
-// 若此时清空 text，按钮点击将拿不到文本导致标注失效
-function hideAnnoBar() {
-  if (annoBar) annoBar.style.display = "none";
+  const fontVal = h("span", { class: "muted" }, session.settings.font + "px");
+  const fontMinus = h("button", { class: "cat-mini", onclick: () => changeFont(-1) }, "A-");
+  const fontPlus = h("button", { class: "cat-mini", onclick: () => changeFont(1) }, "A+");
+
+  const lineVal = h("span", { class: "muted" }, session.settings.line.toFixed(1));
+  const lineMinus = h("button", { class: "cat-mini", onclick: () => changeLine(-0.1) }, "—");
+  const linePlus = h("button", { class: "cat-mini", onclick: () => changeLine(0.1) }, "＋");
+
+  const themeSeg = h("div", { class: "seg" }, themeBtn("day", "日用"), themeBtn("sepia", "护眼"), themeBtn("night", "夜间"));
+  const marginSeg = h("div", { class: "seg" }, marginBtn("narrow", "窄"), marginBtn("normal", "标准"), marginBtn("wide", "宽"));
+  const modeSeg = h("div", { class: "seg" }, modeBtn("scroll", "滚动"), modeBtn("slide", "平滑"), modeBtn("simulate", "仿真"), modeBtn("cover", "切换"));
+
+  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "字号"), h("div", { class: "rs-row" }, fontMinus, fontVal, fontPlus)));
+  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "行距"), h("div", { class: "rs-row" }, lineMinus, lineVal, linePlus)));
+  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "翻页方式"), modeSeg));
+  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "主题"), themeSeg));
+  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "边距"), marginSeg));
+  panel.appendChild(h("button", { class: "btn block", style: "margin-top:6px;", onclick: () => { panel.style.display = "none"; } }, "完成"));
+
+  function changeFont(d) {
+    session.settings.font = Math.max(13, Math.min(28, session.settings.font + d));
+    fontVal.textContent = session.settings.font + "px";
+    applyAndRebuild();
+    db.setSetting("readerFont", session.settings.font);
+  }
+  function changeLine(d) {
+    session.settings.line = Math.max(1.3, Math.min(2.2, Math.round((session.settings.line + d) * 10) / 10));
+    lineVal.textContent = session.settings.line.toFixed(1);
+    applyAndRebuild();
+    db.setSetting("readerLine", session.settings.line);
+  }
+  function modeBtn(v, label) {
+    const b = h("button", { class: session.settings.mode === v ? "on" : "", onclick: () => {
+      if (session.settings.mode === v) return;
+      session.settings.mode = v;
+      [...modeSeg.children].forEach((c) => c.classList.toggle("on", c === b));
+      db.setSetting("readerMode", v);
+      switchMode();
+    } }, label);
+    return b;
+  }
+  function themeBtn(v, label) {
+    const b = h("button", { class: session.settings.theme === v ? "on" : "", onclick: () => {
+      session.settings.theme = v;
+      [...themeSeg.children].forEach((c) => c.classList.toggle("on", c === b));
+      applyAndRebuild();
+      db.setSetting("readerTheme", v);
+    } }, label);
+    return b;
+  }
+  function marginBtn(v, label) {
+    const b = h("button", { class: session.settings.margin === v ? "on" : "", onclick: () => {
+      session.settings.margin = v;
+      [...marginSeg.children].forEach((c) => c.classList.toggle("on", c === b));
+      applyAndRebuild();
+      db.setSetting("readerMargin", v);
+    } }, label);
+    return b;
+  }
+  return panel;
 }
 
-async function applyAnnotationFromBar() {
-  if (!annoBar) return;
-  const text = annoBar.text;
-  if (!text) return;
-  const mode = annoBar.dataset.mode || "highlight";
-  const color = annoBar.dataset.color || "#ffeb3b";
-  const note = ""; // 快速标注不带笔记；写笔记走独立编辑器
-  const content = layer.querySelector(".reader-content");
-  if (!content) return;
-  const ci = currentChapterIndex(content);
-  const dup = session.annotations.find(
-    (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
-      a.selectedText === text && a.type === mode && a.color === color
-  );
-  if (dup) { toast("该批注已存在"); hideAnnoBar(); return; }
-
-  const anno = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    bookId: session.book.id, chapterIndex: ci, selectedText: text,
-    type: mode, color, note, createdAt: Date.now(),
-  };
-  await db.put("annotations", anno);
-  session.annotations.push(anno);
-  hideAnnoBar();
-  annoBar.text = null;
-  window.getSelection()?.removeAllRanges();
-  const scrollTop = content.scrollTop;
-  renderContent(content, session.book, session.annotations);
-  applyContentStyle(content, session.settings);
-  content.scrollTop = scrollTop;
-  toast(mode === "highlight" ? "荧光笔标注" : "下划线标注");
+// 字号/行距/主题/边距变化后的重建（滚动=应用样式；分页=重新分页）
+function applyAndRebuild() {
+  if (session.settings.mode === "scroll") {
+    const content = layer.querySelector(".reader-content");
+    if (content) { applyContentStyle(content, session.settings); }
+    return;
+  }
+  const ci = session.pages[session.pageIndex]?.chapterIndex || 0;
+  session.pages = buildPages(session.settings);
+  const vp = layer.querySelector(".page-viewport");
+  if (vp) {
+    vp.style.fontSize = session.settings.font + "px";
+    vp.style.lineHeight = session.settings.line;
+    vp.className = "page-viewport r-theme-" + session.settings.theme;
+  }
+  const idx = session.pages.findIndex((p) => p.chapterIndex === ci);
+  turnToPage(idx >= 0 ? idx : session.pageIndex);
 }
 
-// ============ 章节导航 ============
-function gotoNextChapter(content) {
-  const chapters = [...content.querySelectorAll(".reader-chapter")];
-  const ci = currentChapterIndex(content);
-  if (ci < chapters.length - 1) chapters[ci + 1].scrollIntoView({ behavior: "smooth", block: "start" });
+// 翻页方式切换（滚动↔分页）
+function switchMode() {
+  const oldMode = session.settings.mode === "scroll" ? "scroll" : "page";
+  const ci = session.pages.length ? session.pages[session.pageIndex]?.chapterIndex || 0 : 0;
+  const frac = session.book.progress || 0;
+  const oldContent = layer.querySelector(".reader-content");
+  const oldVp = layer.querySelector(".page-viewport");
+  const newContent = buildContentArea(session.settings);
+  if (oldContent) oldContent.remove();
+  if (oldVp) oldVp.remove();
+  // 重新绑定事件到新内容区
+  bindContentEvents(newContent);
+  // 插入到 bottom 之前
+  layer.insertBefore(newContent, layer.querySelector(".reader-bottom"));
+  requestAnimationFrame(() => {
+    if (session.settings.mode === "scroll") {
+      renderContent(newContent, session.book, session.annotations);
+      applyContentStyle(newContent, session.settings);
+      const target = frac * (newContent.scrollHeight - newContent.clientHeight);
+      newContent.scrollTop = Math.max(0, target || 0);
+    } else {
+      session.pages = buildPages(session.settings);
+      if (!session.pages.length) session.pages = [{ chapterIndex: 0, html: "<p>（空书）</p>" }];
+      session.pageIndex = Math.max(0, Math.min(session.pages.length - 1,
+        Math.round(frac * (session.pages.length - 1))));
+      renderPage(session.pageIndex);
+      // 尝试落到原章节
+      const idx = session.pages.findIndex((p) => p.chapterIndex === ci);
+      if (idx >= 0) { session.pageIndex = idx; renderPage(idx); }
+    }
+    updateAfterTurn();
+  });
 }
-function gotoPrevChapter(content) {
-  const chapters = [...content.querySelectorAll(".reader-chapter")];
-  const ci = currentChapterIndex(content);
-  if (ci > 0) chapters[ci - 1].scrollIntoView({ behavior: "smooth", block: "start" });
+
+function bindContentEvents(content) {
+  content.addEventListener("click", onContentClick);
+  content.addEventListener("contextmenu", (e) => {
+    if (hasActiveSelection()) { e.preventDefault(); checkSelection(); }
+  });
+  content.addEventListener("touchstart", (e) => { session.touchX = e.touches[0].clientX; }, { passive: true });
+  content.addEventListener("touchend", (e) => {
+    if (session.settings.mode === "scroll") return;
+    const dx = e.changedTouches[0].clientX - session.touchX;
+    if (Math.abs(dx) > 50) turnPage(dx < 0 ? 1 : -1);
+  }, { passive: true });
+  if (session.settings.mode === "scroll") {
+    content.addEventListener("scroll", () => {
+      if (session.raf) return;
+      session.raf = requestAnimationFrame(() => {
+        session.raf = 0;
+        const frac = content.scrollHeight > content.clientHeight
+          ? content.scrollTop / (content.scrollHeight - content.clientHeight) : 1;
+        session.book.progress = Math.max(0, Math.min(1, frac));
+        const p = layer.querySelector(".reader-prog-text");
+        if (p) p.textContent = Math.round(session.book.progress * 100) + "%";
+        updateChapterName(content, layer.querySelector(".reader-chap"));
+      });
+    }, { passive: true });
+  }
+}
+
+function openReaderSettings() { openPanel("reader-settings"); }
+
+function toggleUI(forceShow) {
+  if (!session) return;
+  session.uiHidden = forceShow ? false : !session.uiHidden;
+  if (layer) layer.classList.toggle("ui-hidden", session.uiHidden);
+}
+
+// ============ 计时 & 保存 ============
+function onVisibility() { if (document.hidden) flush(); }
+
+function updateChapterName(content, el) {
+  if (!el) return;
+  const heads = [...content.querySelectorAll(".r-ch")];
+  if (!heads.length) { el.textContent = ""; return; }
+  const top = content.scrollTop + 20;
+  let name = "";
+  for (const hd of heads) { if (hd.offsetTop <= top) name = hd.textContent; else break; }
+  if (!name && heads[0]) name = heads[0].textContent;
+  el.textContent = name;
 }
 
 function currentChapterIndex(content) {
@@ -710,86 +1061,6 @@ function currentChapterIndex(content) {
 function scrollFraction(content) {
   return content.scrollHeight > content.clientHeight
     ? content.scrollTop / (content.scrollHeight - content.clientHeight) : 1;
-}
-
-// ============ 设置面板 ============
-function buildSettingsPanel(content) {
-  const panel = h("div", { class: "reader-settings" });
-  panel.style.display = "none";
-
-  const fontVal = h("span", { class: "muted" }, session.settings.font + "px");
-  const fontMinus = h("button", { class: "cat-mini", onclick: () => changeFont(-1) }, "A-");
-  const fontPlus = h("button", { class: "cat-mini", onclick: () => changeFont(1) }, "A+");
-
-  const lineVal = h("span", { class: "muted" }, session.settings.line.toFixed(1));
-  const lineMinus = h("button", { class: "cat-mini", onclick: () => changeLine(-0.1) }, "—");
-  const linePlus = h("button", { class: "cat-mini", onclick: () => changeLine(0.1) }, "＋");
-
-  const themeSeg = h("div", { class: "seg" },
-    themeBtn("day", "日用"), themeBtn("sepia", "护眼"), themeBtn("night", "夜间"));
-  const marginSeg = h("div", { class: "seg" },
-    marginBtn("narrow", "窄"), marginBtn("normal", "标准"), marginBtn("wide", "宽"));
-
-  panel.appendChild(h("div", { class: "rs-block" },
-    h("div", { class: "rs-label" }, "字号"), h("div", { class: "rs-row" }, fontMinus, fontVal, fontPlus)));
-  panel.appendChild(h("div", { class: "rs-block" },
-    h("div", { class: "rs-label" }, "行距"), h("div", { class: "rs-row" }, lineMinus, lineVal, linePlus)));
-  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "主题"), themeSeg));
-  panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "边距"), marginSeg));
-  panel.appendChild(h("button", { class: "btn block", style: "margin-top:6px;", onclick: () => { panel.style.display = "none"; } }, "完成"));
-
-  function changeFont(d) {
-    session.settings.font = Math.max(13, Math.min(28, session.settings.font + d));
-    fontVal.textContent = session.settings.font + "px";
-    applyContentStyle(content, session.settings);
-    db.setSetting("readerFont", session.settings.font);
-  }
-  function changeLine(d) {
-    session.settings.line = Math.max(1.3, Math.min(2.2, Math.round((session.settings.line + d) * 10) / 10));
-    lineVal.textContent = session.settings.line.toFixed(1);
-    applyContentStyle(content, session.settings);
-    db.setSetting("readerLine", session.settings.line);
-  }
-  function themeBtn(v, label) {
-    const b = h("button", { class: session.settings.theme === v ? "on" : "", onclick: () => {
-      session.settings.theme = v;
-      [...themeSeg.children].forEach((c) => c.classList.toggle("on", c === b));
-      applyContentStyle(content, session.settings);
-      db.setSetting("readerTheme", v);
-    } }, label);
-    return b;
-  }
-  function marginBtn(v, label) {
-    const b = h("button", { class: session.settings.margin === v ? "on" : "", onclick: () => {
-      session.settings.margin = v;
-      [...marginSeg.children].forEach((c) => c.classList.toggle("on", c === b));
-      applyContentStyle(content, session.settings);
-      db.setSetting("readerMargin", v);
-    } }, label);
-    return b;
-  }
-  return panel;
-}
-
-function openReaderSettings() { openPanel("reader-settings"); }
-
-function toggleUI(forceShow) {
-  if (!session) return;
-  session.uiHidden = forceShow ? false : !session.uiHidden;
-  if (layer) layer.classList.toggle("ui-hidden", session.uiHidden);
-}
-
-// ============ 计时 & 保存 ============
-function onVisibility() { if (document.hidden) flush(); }
-
-function updateChapterName(content, el) {
-  const heads = [...content.querySelectorAll(".r-ch")];
-  if (!heads.length) { el.textContent = ""; return; }
-  const top = content.scrollTop + 20;
-  let name = "";
-  for (const hd of heads) { if (hd.offsetTop <= top) name = hd.textContent; else break; }
-  if (!name && heads[0]) name = heads[0].textContent;
-  el.textContent = name;
 }
 
 async function flush() {
