@@ -91,9 +91,9 @@ export async function openBook(id) {
     if (hasActiveSelection()) { e.preventDefault(); checkSelection(); }
   });
 
-  // 滚动：更新进度 + 章节名；工具栏跟随选区重新定位（不粗暴隐藏，避免与 smooth 滚动竞争）
+  // 滚动：更新进度 + 章节名（不因滚动隐藏批注工具栏——点颜色时系统菜单弹出常伴随滚动，
+  // 若此时因选区被清空而隐藏，工具栏会在操作中被误关）
   content.addEventListener("scroll", () => {
-    if (annoBar && annoBar.style.display !== "none") repositionAnnoBar();
     if (session.raf) return;
     session.raf = requestAnimationFrame(() => {
       session.raf = 0;
@@ -446,13 +446,6 @@ function showAnnoBar(rect, text) {
 
 // 只隐藏不清空 text：手机上点击"标注"按钮时选区先被浏览器清空，
 // 若此时清空 text，按钮点击将拿不到文本导致标注失效
-// 滚动时让工具栏跟随选区（live range 的 rect 会随滚动自动更新）
-function repositionAnnoBar() {
-  // 底部固定条不需要重新定位，只需检查选区是否仍有效
-  if (!annoBar || annoBar.style.display === "none") return;
-  if (!hasActiveSelection()) hideAnnoBar();
-}
-
 function hideAnnoBar() {
   if (annoBar) annoBar.style.display = "none";
 }
