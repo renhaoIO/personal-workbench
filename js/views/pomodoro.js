@@ -27,17 +27,23 @@ async function loadSettings() {
   settings = { ...DEFAULTS, ...(await db.getSetting("pomodoroSettings", {})) };
 }
 
-function beep() {
+// 阶段切换提示音：workDone=专注结束(上升三音) / breakDone=休息结束(下降两音)
+function chime(kind) {
   try {
     const ac = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ac.createOscillator();
-    const g = ac.createGain();
-    o.connect(g); g.connect(ac.destination);
-    o.frequency.value = 880;
-    g.gain.setValueAtTime(0.001, ac.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.3, ac.currentTime + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.6);
-    o.start(); o.stop(ac.currentTime + 0.6);
+    const notes = kind === "workDone" ? [660, 880, 990] : [880, 660];
+    notes.forEach((freq, i) => {
+      const t = ac.currentTime + i * 0.18;
+      const o = ac.createOscillator();
+      const g = ac.createGain();
+      o.connect(g); g.connect(ac.destination);
+      o.type = "sine";
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.28, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      o.start(t); o.stop(t + 0.2);
+    });
   } catch (e) {}
 }
 
@@ -83,7 +89,7 @@ export async function renderPomodoro(root) {
   const noiseBtn = h("button", { class: "btn ghost", style: "flex:1", onclick: () => window.__route("whitenoise") }, "🎧 白噪音");
 
   const card = h("div", { class: "card" },
-    h("div", { class: "row spread" }, h("b", {}, "番茄时钟"), h("span", { class: "muted" }, "第 " + (rounds + 1) + " 轮")),
+    h("div", { class: "row spread" }, h("b", {}, "番茄时钟"), h("span", { class: "muted", id: "pomo-round" }, "第 " + (rounds + 1) + " 轮")),
     timerEl, modeEl, sel, catSel, startBtn,
     h("div", { class: "row", style: "gap:10px; margin-top:10px;" }, skipBtn, endBtn),
     h("div", { class: "row", style: "gap:10px; margin-top:10px;" }, resetBtn, setBtn, noiseBtn)
@@ -96,10 +102,14 @@ export async function renderPomodoro(root) {
   const todaySessions = sessions.filter((s) => s.startedAt >= today.getTime());
   const todayMin = Math.round(todaySessions.reduce((a, s) => a + (s.durationSec || 0), 0) / 60);
 
+  const countB = h("b", {}, String(todaySessions.length));
+  const minB = h("b", {}, String(todayMin));
+  const roundB = h("b", {}, String(rounds));
+
   root.appendChild(h("div", { class: "stat-grid" },
-    stat(todaySessions.length, "今日专注"),
-    stat(todayMin, "专注分钟"),
-    stat(rounds, "已完成轮次")
+    h("div", { class: "stat" }, countB, h("span", {}, "今日专注")),
+    h("div", { class: "stat" }, minB, h("span", {}, "专注分钟")),
+    h("div", { class: "stat" }, roundB, h("span", {}, "已完成轮次"))
   ));
 
   // 分类专注分布（环形图）
@@ -136,9 +146,6 @@ export async function renderPomodoro(root) {
     const m = Math.floor(sec / 60), s = sec % 60;
     return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
   }
-  function stat(n, label) {
-    return h("div", { class: "stat" }, h("b", {}, String(n)), h("span", {}, label));
-  }
   function paint() {
     timerEl.textContent = fmt(remaining);
     startBtn.textContent = running ? "⏸ 暂停" : "▶ 开始";
@@ -164,19 +171,38 @@ export async function renderPomodoro(root) {
     running = false; clearInterval(timer); remaining = dur(); paint();
   }
   async function complete() {
-    running = false; clearInterval(timer);
-    beep();
+    clearInterval(timer);
     if (mode === "work") {
       await db.put("pomodoro", { id: uid(), type: "work", startedAt: Date.now() - settings.workMin * 60000, durationSec: settings.workMin * 60, taskId, category: catId });
       rounds++;
+      chime("workDone");
       mode = rounds % settings.roundsBeforeLong === 0 ? "long" : "break";
       toast("专注完成，休息一下 ☕");
+      // 自动衔接：休息阶段也开始计时
+      remaining = dur();
+      running = true;
+      endTime = Date.now() + remaining * 1000;
+      timer = setInterval(tick, 250);
+      paint();
+      // 更新轮次/统计（不整页重渲染，避免打断自动计时）
+      countB.textContent = String(todaySessions.length + 1);
+      minB.textContent = String(todayMin + settings.workMin);
+      roundB.textContent = String(rounds);
+      const roundEl = root.querySelector("#pomo-round");
+      if (roundEl) roundEl.textContent = "第 " + (rounds + 1) + " 轮";
     } else {
+      chime("breakDone");
       mode = "work";
       toast("休息结束，继续加油 💪");
+      // 自动衔接：下一轮专注直接开始
+      remaining = dur();
+      running = true;
+      endTime = Date.now() + remaining * 1000;
+      timer = setInterval(tick, 250);
+      paint();
+      const roundEl = root.querySelector("#pomo-round");
+      if (roundEl) roundEl.textContent = "第 " + (rounds + 1) + " 轮";
     }
-    remaining = dur();
-    window.__rerender();
   }
   // 提前结束：彻底结束学习，不进入休息，按实际已专注时长计入统计
   async function endSession() {
