@@ -56,11 +56,17 @@ async function inflate(raw) {
     throw new Error("当前环境不支持解压（DecompressionStream 不可用），无法导入 EPUB/FB2，请改用 TXT 或更新浏览器");
   }
   const ds = new DecompressionStream("deflate-raw");
-  const w = ds.writable.getWriter();
-  w.write(raw);
-  await w.close();
-  // 用分块读取消费流，避免个别 WebView 中 new Response(stream).arrayBuffer() 死锁导致导入卡在“解析中”
-  const reader = ds.readable.getReader();
+  // 用 ReadableStream → pipeThrough 代替手动 getWriter()/getReader()：
+  // 浏览器标准流管道自动管理 writable 关闭和 readable 消费时机，彻底消除
+  // 部分手机 WebView 中 writable/readable 并发导致的死锁（卡在「解析中」无后续）。
+  const input = new ReadableStream({
+    start(controller) {
+      controller.enqueue(raw);
+      controller.close();
+    }
+  });
+  const decompressedStream = input.pipeThrough(ds);
+  const reader = decompressedStream.getReader();
   const chunks = [];
   let total = 0;
   while (true) {
