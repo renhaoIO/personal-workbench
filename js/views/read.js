@@ -304,7 +304,58 @@ function jumpToAnno(a) {
   const content = layer.querySelector(".reader-content");
   if (!content) return;
   const ch = content.querySelector(`.reader-chapter[data-chapter="${a.chapterIndex}"]`);
-  if (ch) ch.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!ch) { toast("未找到章节"); return; }
+  // 在章节内定位批注文本的精确位置
+  const range = findTextRange(ch, a.selectedText);
+  if (range) {
+    const rect = range.getBoundingClientRect();
+    const target = ch.offsetTop + (rect.top - content.getBoundingClientRect().top) + content.scrollTop - 60;
+    content.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    flashAnno(range);
+  } else {
+    ch.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+// 在 root 内查找 target 文本的位置（跨文本节点，兼容批注 span 包裹后节点结构变化）
+function findTextRange(root, target) {
+  const t = (target || "").trim();
+  if (!t) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let full = "";
+  let node;
+  while ((node = walker.nextNode())) {
+    nodes.push(node);
+    full += node.textContent;
+  }
+  const idx = full.indexOf(t);
+  if (idx < 0) return null;
+  let pos = 0;
+  for (const n of nodes) {
+    const len = n.textContent.length;
+    if (idx >= pos && idx < pos + len) {
+      const start = idx - pos;
+      const range = document.createRange();
+      range.setStart(n, start);
+      range.setEnd(n, Math.min(start + t.length, len));
+      return range;
+    }
+    pos += len;
+  }
+  return null;
+}
+
+// 跳转后闪烁提示批注位置
+function flashAnno(range) {
+  let el = range.startContainer.parentElement;
+  while (el && el !== layer && !el.classList.contains("anno-hl") && !el.classList.contains("anno-ul")) {
+    el = el.parentElement;
+  }
+  if (el && el !== layer) {
+    el.classList.add("anno-jump-flash");
+    setTimeout(() => el.classList.remove("anno-jump-flash"), 2600);
+  }
 }
 
 // 编辑批注笔记
