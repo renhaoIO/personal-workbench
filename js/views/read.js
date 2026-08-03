@@ -52,6 +52,7 @@ export async function openBook(id) {
     h("div", { class: "reader-top-actions" },
       h("button", { class: "icon-btn", title: "目录", onclick: toggleTOC }, "☰"),
       h("button", { class: "icon-btn", title: "书签", onclick: toggleBookmarks }, "🔖"),
+      h("button", { class: "icon-btn", title: "批注总览", onclick: toggleAnnotations }, "📝"),
       h("button", { class: "icon-btn", title: "设置", onclick: () => openReaderSettings() }, "Aa")
     )
   );
@@ -105,7 +106,7 @@ export async function openBook(id) {
   }, { passive: true });
 
   layer = h("div", { class: "reader-layer" }, top, content, bottom,
-    buildSettingsPanel(content), buildTOCPanel(content), buildBookmarkPanel(content));
+    buildSettingsPanel(content), buildTOCPanel(content), buildBookmarkPanel(content), buildAnnoPanel(content));
   document.body.appendChild(layer);
 
   // 定位到上次进度
@@ -149,7 +150,7 @@ function applyAnnotation(html, a) {
 function buildTOCPanel(content) {
   const panel = h("div", { class: "reader-toc" });
   panel.style.display = "none";
-  const back = h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "✕");
+  const back = h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "←");
   panel.appendChild(back);
   const list = h("div", { class: "toc-list" });
   const chapters = session.book.chapters;
@@ -173,12 +174,12 @@ function openPanel(cls) {
   if (!existing) return;
   const visible = existing.style.display !== "none";
   // 关闭所有面板
-  layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings").forEach((p) => p.style.display = "none");
+  layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings,.reader-annotations").forEach((p) => p.style.display = "none");
   hideAnnoBar();
   if (!visible) existing.style.display = "block";
 }
 function closePanel() {
-  layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings").forEach((p) => p.style.display = "none");
+  layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings,.reader-annotations").forEach((p) => p.style.display = "none");
 }
 
 function scrollToChapter(content, idx) {
@@ -259,6 +260,98 @@ async function doRemoveBookmark(item, bm) {
   refreshBookmarkList();
 }
 
+// ============ 批注总览面板 ============
+function toggleAnnotations() { openPanel("reader-annotations"); refreshAnnoList(); }
+
+function buildAnnoPanel(content) {
+  const panel = h("div", { class: "reader-annotations" });
+  panel.style.display = "none";
+  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "✕"));
+  const list = h("div", { class: "anno-list" });
+  list.id = "anno-list";
+  panel.appendChild(list);
+  return panel;
+}
+
+function refreshAnnoList() {
+  const list = layer.querySelector("#anno-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const annos = session.annotations.filter((a) => a.bookId === session.book.id);
+  if (!annos.length) { list.appendChild(h("div", { class: "muted", style: "padding:12px;" }, "暂无批注")); return; }
+  // 按章节分组
+  const groups = {};
+  annos.forEach((a) => { const k = a.chapterIndex; if (!groups[k]) groups[k] = []; groups[k].push(a); });
+  Object.keys(groups).sort((a, b) => a - b).forEach((ci) => {
+    const ch = session.book.chapters[ci];
+    const title = ch ? (ch.title || `第 ${+ci + 1} 节`) : `第 ${+ci + 1} 节`;
+    list.appendChild(h("div", { class: "anno-group-title" }, title));
+    groups[ci].forEach((a) => {
+      const item = h("div", { class: "anno-item" },
+        h("span", { class: "anno-dot", style: `background:${a.color}` + (a.type === "underline" ? ";border-radius:0;height:3px;align-self:center" : "") }),
+        h("span", { class: "anno-text" }, a.selectedText.slice(0, 30) + (a.selectedText.length > 30 ? "…" : "")),
+        h("span", { class: "anno-note-text", title: a.note || "", onclick: (ev) => { ev.stopPropagation(); editAnnoNote(a, item); } }, a.note || "＋笔记"),
+        h("button", { class: "icon-btn", style: "font-size:13px;width:28px;height:28px;", title: "删除", onclick: (ev) => { ev.stopPropagation(); confirmRemoveAnno(a, item); } }, "✕")
+      );
+      item.addEventListener("click", () => { jumpToAnno(a); closePanel(); });
+      list.appendChild(item);
+    });
+  });
+}
+
+function jumpToAnno(a) {
+  const content = layer.querySelector(".reader-content");
+  if (!content) return;
+  const ch = content.querySelector(`.reader-chapter[data-chapter="${a.chapterIndex}"]`);
+  if (ch) ch.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// 编辑批注笔记
+function editAnnoNote(a, item) {
+  const span = item.querySelector(".anno-note-text");
+  if (!span || span.querySelector("input")) return;
+  const cur = a.note || "";
+  const input = h("input", { class: "anno-note-edit", value: cur, placeholder: "笔记..." });
+  span.replaceWith(input);
+  input.focus();
+  const save = async () => {
+    a.note = input.value.trim();
+    await db.put("annotations", a);
+    refreshAnnoList();
+  };
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } });
+}
+
+// 删除批注
+async function doRemoveAnno(a) {
+  await db.del("annotations", a.id);
+  session.annotations = session.annotations.filter((x) => x.id !== a.id);
+  // 重新渲染（去掉标注样式）
+  const content = layer.querySelector(".reader-content");
+  if (content) {
+    const st = content.scrollTop;
+    renderContent(content, session.book, session.annotations);
+    applyContentStyle(content, session.settings);
+    content.scrollTop = st;
+  }
+  toast("已删除批注");
+  refreshAnnoList();
+}
+
+function confirmRemoveAnno(a, item) {
+  if (item.classList.contains("confirming")) return;
+  item.classList.add("confirming");
+  const act = item.querySelector(".anno-note-text") || item.querySelector(".anno-note-edit") || item.querySelector(".anno-text");
+  const row = act ? act.parentNode : item;
+  const confirm = h("span", { class: "anno-del-confirm" },
+    h("button", { class: "bm-del-btn yes", onclick: (ev) => { ev.stopPropagation(); doRemoveAnno(a); } }, "删除"),
+    h("button", { class: "bm-del-btn no", onclick: (ev) => { ev.stopPropagation(); refreshAnnoList(); } }, "取消")
+  );
+  row.appendChild(confirm);
+  item._confirmT = setTimeout(() => refreshAnnoList(), 4000);
+}
+
 function jumpToBookmark(bm) {
   const content = layer.querySelector(".reader-content");
   if (!content) return;
@@ -307,6 +400,9 @@ function showAnnoBar(rect, text) {
       hlBtn.classList.add("on");
       annoBar.dataset.mode = "highlight";
     });
+    hlBtn.classList.add("on");
+    annoBar.dataset.mode = "highlight";
+
     // 下划线按钮
     const ulBtn = h("button", { class: "anno-type", title: "下划线" }, "U");
     ulBtn.addEventListener("click", () => {
@@ -315,9 +411,6 @@ function showAnnoBar(rect, text) {
       ulBtn.classList.add("on");
       annoBar.dataset.mode = "underline";
     });
-    // 默认荧光笔
-    hlBtn.classList.add("on");
-    annoBar.dataset.mode = "highlight";
 
     // 颜色色块
     const colorsRow = h("div", { class: "anno-colors" });
@@ -332,35 +425,32 @@ function showAnnoBar(rect, text) {
     });
     annoBar.dataset.color = HL_COLORS[0].v;
 
+    // 文字笔记输入
+    const noteInput = h("input", { class: "anno-note", placeholder: "笔记(选填)", type: "text" });
+
     const okBtn = h("button", { class: "anno-apply", onclick: () => applyAnnotationFromBar() }, "标注");
     annoBar.appendChild(hlBtn);
     annoBar.appendChild(ulBtn);
     annoBar.appendChild(colorsRow);
+    annoBar.appendChild(noteInput);
     annoBar.appendChild(okBtn);
-    document.body.appendChild(annoBar);
+    layer.appendChild(annoBar);
   }
-  // 定位到选区附近（选区靠近顶部时放在选区下方，避免遮住内容）
-  const top = rect.top < 90 ? rect.bottom + 8 : rect.top - 56;
-  const left = Math.max(8, Math.min(window.innerWidth - 210, rect.left + rect.width / 2 - 100));
-  annoBar.style.top = top + "px";
-  annoBar.style.left = left + "px";
   annoBar.style.display = "flex";
   annoBar.text = text;
+  // 清空笔记输入
+  const ni = annoBar.querySelector(".anno-note");
+  if (ni) ni.value = "";
 }
+
 
 // 只隐藏不清空 text：手机上点击"标注"按钮时选区先被浏览器清空，
 // 若此时清空 text，按钮点击将拿不到文本导致标注失效
 // 滚动时让工具栏跟随选区（live range 的 rect 会随滚动自动更新）
 function repositionAnnoBar() {
+  // 底部固定条不需要重新定位，只需检查选区是否仍有效
   if (!annoBar || annoBar.style.display === "none") return;
-  const sel = window.getSelection();
-  if (!sel || !sel.rangeCount) { hideAnnoBar(); return; }
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  if (!rect || (!rect.width && !rect.height)) { hideAnnoBar(); return; }
-  const top = rect.top < 90 ? rect.bottom + 8 : rect.top - 56;
-  const left = Math.max(8, Math.min(window.innerWidth - 210, rect.left + rect.width / 2 - 100));
-  annoBar.style.top = top + "px";
-  annoBar.style.left = left + "px";
+  if (!hasActiveSelection()) hideAnnoBar();
 }
 
 function hideAnnoBar() {
@@ -373,10 +463,11 @@ async function applyAnnotationFromBar() {
   if (!text) return;
   const mode = annoBar.dataset.mode || "highlight";
   const color = annoBar.dataset.color || "#ffeb3b";
+  const noteInput = annoBar.querySelector(".anno-note");
+  const note = noteInput ? noteInput.value.trim() : "";
   const content = layer.querySelector(".reader-content");
   if (!content) return;
   const ci = currentChapterIndex(content);
-  // 去重：同章节同文本同类型同颜色已存在则跳过
   const dup = session.annotations.find(
     (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
       a.selectedText === text && a.type === mode && a.color === color
@@ -385,19 +476,13 @@ async function applyAnnotationFromBar() {
 
   const anno = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    bookId: session.book.id,
-    chapterIndex: ci,
-    selectedText: text,
-    type: mode,
-    color,
-    note: "",
-    createdAt: Date.now(),
+    bookId: session.book.id, chapterIndex: ci, selectedText: text,
+    type: mode, color, note, createdAt: Date.now(),
   };
   await db.put("annotations", anno);
   session.annotations.push(anno);
   hideAnnoBar();
-  annoBar.text = null; // 标注完成，清除快照避免误用
-  // 清除选区，重新渲染当前章节
+  annoBar.text = null;
   window.getSelection()?.removeAllRanges();
   const scrollTop = content.scrollTop;
   renderContent(content, session.book, session.annotations);
