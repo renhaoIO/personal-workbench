@@ -376,6 +376,8 @@ function onSelectionChange() {
 }
 
 function checkSelection() {
+  // 用户正在工具栏内操作（选颜色等），不因选区清空而关闭
+  if (annoBar && annoBar._active) return;
   const sel = window.getSelection();
   if (!sel || !sel.rangeCount) { hideAnnoBar(); return; }
   const text = sel.toString().trim();
@@ -435,6 +437,15 @@ function showAnnoBar(rect, text) {
     annoBar.appendChild(noteInput);
     annoBar.appendChild(okBtn);
     layer.appendChild(annoBar);
+    // 工具栏内操作时阻止 selectionchange 误关弹窗（点颜色色块会清除选区导致 checkSelection→hide）
+    annoBar.addEventListener("pointerdown", () => {
+      clearTimeout(annoBar._activeT);
+      annoBar._active = true;
+    });
+    annoBar.addEventListener("pointerup", () => {
+      clearTimeout(annoBar._activeT);
+      annoBar._activeT = setTimeout(() => { annoBar._active = false; }, 600);
+    });
   }
   annoBar.style.display = "flex";
   annoBar.text = text;
