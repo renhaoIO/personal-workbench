@@ -51,7 +51,7 @@ export async function openBook(id) {
     h("div", { class: "reader-title" }, book.title || "未命名"),
     h("div", { class: "reader-top-actions" },
       h("button", { class: "icon-btn", title: "目录", onclick: toggleTOC }, "☰"),
-      h("button", { class: "icon-btn", title: "书签", onclick: toggleBookmarks }, ""),
+      h("button", { class: "icon-btn", title: "书签", onclick: toggleBookmarks }, "🔖"),
       h("button", { class: "icon-btn", title: "设置", onclick: () => openReaderSettings() }, "Aa")
     )
   );
@@ -69,10 +69,12 @@ export async function openBook(id) {
     h("button", { class: "reader-nav", onclick: () => gotoNextChapter(content) }, "下一 ›")
   );
 
-  // 点击分区翻页
+  // 点击分区翻页（有活动选区时不翻页，避免长按选中文字后误翻页）
   content.addEventListener("click", (e) => {
     if (session.uiHidden) { toggleUI(true); return; }
-    // 如果当前有批注工具栏显示，先隐藏
+    // 有活动选区：可能是长按选字后的点击，只收起工具栏、不翻页
+    if (hasActiveSelection()) { hideAnnoBar(); return; }
+    // 工具栏显示时点击内容 → 收起
     if (annoBar && annoBar.style.display !== "none") { hideAnnoBar(); return; }
     const y = e.clientY;
     const h2 = window.innerHeight / 2;
@@ -83,10 +85,14 @@ export async function openBook(id) {
 
   // 选中文字 → 弹出批注工具栏（selectionchange 对手机长按/PC 拖动都可靠，防抖后显示）
   document.addEventListener("selectionchange", onSelectionChange);
+  // PC 右键选中兜底：阻止系统菜单，直接弹我们的工具栏
+  content.addEventListener("contextmenu", (e) => {
+    if (hasActiveSelection()) { e.preventDefault(); checkSelection(); }
+  });
 
-  // 滚动：更新进度 + 章节名（滚动时同时收起批注工具栏，避免位置过期）
+  // 滚动：更新进度 + 章节名；工具栏跟随选区重新定位（不粗暴隐藏，避免与 smooth 滚动竞争）
   content.addEventListener("scroll", () => {
-    hideAnnoBar();
+    if (annoBar && annoBar.style.display !== "none") repositionAnnoBar();
     if (session.raf) return;
     session.raf = requestAnimationFrame(() => {
       session.raf = 0;
@@ -143,7 +149,7 @@ function applyAnnotation(html, a) {
 function buildTOCPanel(content) {
   const panel = h("div", { class: "reader-toc" });
   panel.style.display = "none";
-  const back = h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "← 返回");
+  const back = h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "✕");
   panel.appendChild(back);
   const list = h("div", { class: "toc-list" });
   const chapters = session.book.chapters;
@@ -184,7 +190,7 @@ function scrollToChapter(content, idx) {
 function buildBookmarkPanel(content) {
   const panel = h("div", { class: "reader-bookmarks" });
   panel.style.display = "none";
-  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "← 返回"));
+  panel.appendChild(h("button", { class: "icon-btn", style: "margin-bottom:10px;", onclick: closePanel }, "✕"));
   panel.appendChild(h("button", { class: "btn block", style: "margin-bottom:12px;", onclick: () => addBookmark(content) }, "＋ 添加当前位置书签"));
   const list = h("div", { class: "bm-list" });
   list.id = "bm-list";
@@ -261,6 +267,16 @@ function jumpToBookmark(bm) {
 }
 
 // ============ 批注工具栏 ============
+// 是否在阅读内容区内有一段有效的文字选区
+function hasActiveSelection() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return false;
+  const t = sel.toString().trim();
+  if (t.length < 2) return false;
+  const node = sel.anchorNode;
+  return !!(node && layer && layer.contains(node));
+}
+
 function onSelectionChange() {
   clearTimeout(selTimer);
   selTimer = setTimeout(checkSelection, 150);
@@ -334,6 +350,19 @@ function showAnnoBar(rect, text) {
 
 // 只隐藏不清空 text：手机上点击"标注"按钮时选区先被浏览器清空，
 // 若此时清空 text，按钮点击将拿不到文本导致标注失效
+// 滚动时让工具栏跟随选区（live range 的 rect 会随滚动自动更新）
+function repositionAnnoBar() {
+  if (!annoBar || annoBar.style.display === "none") return;
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) { hideAnnoBar(); return; }
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height)) { hideAnnoBar(); return; }
+  const top = rect.top < 90 ? rect.bottom + 8 : rect.top - 56;
+  const left = Math.max(8, Math.min(window.innerWidth - 210, rect.left + rect.width / 2 - 100));
+  annoBar.style.top = top + "px";
+  annoBar.style.left = left + "px";
+}
+
 function hideAnnoBar() {
   if (annoBar) annoBar.style.display = "none";
 }
