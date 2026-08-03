@@ -640,3 +640,9 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
 .r-theme-night .anno-hl { opacity: .85; }
 .r-theme-night .anno-ul { text-decoration-thickness: 2px; }
 .r-theme-sepia .anno-hl { opacity: .8; }
+/* 批注总览跳转后的位置闪烁提示 */
+.anno-jump-flash { animation: annoFlash 1.2s ease 2; }
+@keyframes annoFlash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 4px var(--primary); border-radius: 4px; }
+}
