@@ -1,11 +1,12 @@
 // 阅读器：全屏阅读界面 + 目录 + 书签 + 批注（荧光笔/下划线 多色）。
 // 富文本渲染（图片/粗体/斜体均在 innerHTML 中保留），阅读计时，进度自动保存。
 import { db } from "../db.js";
-import { h, toast, confirmDialog } from "../util.js";
+import { h, toast } from "../util.js";
 
 let layer = null;     // 阅读器全屏层
 let session = null;   // 当前阅读会话状态
 let annoBar = null;   // 批注浮动工具栏
+let selTimer = null;  // 选区防抖定时器
 
 const HL_COLORS = [
   { v: "#ffeb3b", n: "黄" }, { v: "#ff8a80", n: "红" }, { v: "#82b1ff", n: "蓝" },
@@ -80,12 +81,12 @@ export async function openBook(id) {
     else toggleUI();
   });
 
-  // 选中文字 → 弹出批注工具栏
-  content.addEventListener("touchend", onSelection);
-  content.addEventListener("mouseup", onSelection);
+  // 选中文字 → 弹出批注工具栏（selectionchange 对手机长按/PC 拖动都可靠，防抖后显示）
+  document.addEventListener("selectionchange", onSelectionChange);
 
-  // 滚动：更新进度 + 章节名
+  // 滚动：更新进度 + 章节名（滚动时同时收起批注工具栏，避免位置过期）
   content.addEventListener("scroll", () => {
+    hideAnnoBar();
     if (session.raf) return;
     session.raf = requestAnimationFrame(() => {
       session.raf = 0;
@@ -203,10 +204,10 @@ function refreshBookmarkList() {
       h("span", { class: "bm-title" }, bm.title || "未命名书签"),
       h("div", { class: "bm-meta" },
         h("span", {}, "第" + (bm.chapterIndex + 1) + "章 · " + fmtPct(bm.fraction)),
-        h("button", { class: "icon-btn", style: "font-size:14px;", title: "删除", onclick: (ev) => { ev.stopPropagation(); removeBookmark(bm.id); } }, "✕")
+        h("button", { class: "icon-btn", style: "font-size:14px;", title: "删除", onclick: (ev) => { ev.stopPropagation(); confirmRemoveBookmark(item, bm); } }, "✕")
       )
     );
-    item.addEventListener("click", () => { jumpToBookmark(bm); closePanel(); });
+    item.addEventListener("click", () => { if (!item.classList.contains("confirming")) { jumpToBookmark(bm); closePanel(); } });
     list.appendChild(item);
   });
 }
@@ -230,11 +231,25 @@ async function addBookmark(content) {
   refreshBookmarkList();
 }
 
-async function removeBookmark(bmId) {
-  const ok = await confirmDialog("删除此书签？");
-  if (!ok) return;
-  await db.del("bookmarks", bmId);
-  session.bookmarks = session.bookmarks.filter((b) => b.id !== bmId);
+// 书签删除：阅读界面内两段式确认（✕ → 删除/取消），避免弹出被阅读器遮挡的全局弹窗
+function confirmRemoveBookmark(item, bm) {
+  if (item.classList.contains("confirming")) return;
+  item.classList.add("confirming");
+  const meta = item.querySelector(".bm-meta");
+  meta.innerHTML = "";
+  meta.appendChild(h("span", { style: "color:var(--text-soft);" }, "删除此书签？"));
+  meta.appendChild(h("span", {},
+    h("button", { class: "bm-del-btn yes", onclick: (ev) => { ev.stopPropagation(); doRemoveBookmark(item, bm); } }, "删除"),
+    h("button", { class: "bm-del-btn no", onclick: (ev) => { ev.stopPropagation(); refreshBookmarkList(); } }, "取消")
+  ));
+  item._confirmTimer = setTimeout(() => refreshBookmarkList(), 4000); // 超时自动还原
+}
+
+async function doRemoveBookmark(item, bm) {
+  clearTimeout(item._confirmTimer);
+  await db.del("bookmarks", bm.id);
+  session.bookmarks = session.bookmarks.filter((b) => b.id !== bm.id);
+  toast("已删除书签");
   refreshBookmarkList();
 }
 
@@ -246,39 +261,42 @@ function jumpToBookmark(bm) {
 }
 
 // ============ 批注工具栏 ============
-function onSelection() {
-  setTimeout(() => {
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || !sel.toString().trim() || sel.toString().trim().length < 2) {
-      hideAnnoBar();
-      return;
-    }
-    // 检查选区是否在阅读内容区内
-    const node = sel.anchorNode;
-    if (!node || !layer || !layer.contains(node)) return;
-    showAnnoBar(sel);
-  }, 50);
+function onSelectionChange() {
+  clearTimeout(selTimer);
+  selTimer = setTimeout(checkSelection, 150);
 }
 
-function showAnnoBar(sel) {
+function checkSelection() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) { hideAnnoBar(); return; }
+  const text = sel.toString().trim();
+  if (text.length < 2) { hideAnnoBar(); return; }
+  // 选区必须在阅读内容区内
+  const node = sel.anchorNode;
+  if (!node || !layer || !layer.contains(node)) { hideAnnoBar(); return; }
+  // 快照位置与文本（live selection 在点击按钮后可能失效）
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height)) { hideAnnoBar(); return; }
+  showAnnoBar(rect, text);
+}
+
+function showAnnoBar(rect, text) {
   if (!annoBar) {
     annoBar = h("div", { class: "anno-bar" });
     // 荧光笔按钮
     const hlBtn = h("button", { class: "anno-type", title: "荧光笔" }, "");
     hlBtn.addEventListener("click", () => {
-      const type = annoBar.querySelector(".anno-type.on") === hlBtn ? null : hlBtn;
       const all = annoBar.querySelectorAll(".anno-type");
       all.forEach((b) => b.classList.remove("on"));
-      if (type) type.classList.add("on");
+      hlBtn.classList.add("on");
       annoBar.dataset.mode = "highlight";
     });
     // 下划线按钮
     const ulBtn = h("button", { class: "anno-type", title: "下划线" }, "U");
     ulBtn.addEventListener("click", () => {
-      const type = annoBar.querySelector(".anno-type.on") === ulBtn ? null : ulBtn;
       const all = annoBar.querySelectorAll(".anno-type");
       all.forEach((b) => b.classList.remove("on"));
-      if (type) type.classList.add("on");
+      ulBtn.classList.add("on");
       annoBar.dataset.mode = "underline";
     });
     // 默认荧光笔
@@ -298,39 +316,37 @@ function showAnnoBar(sel) {
     });
     annoBar.dataset.color = HL_COLORS[0].v;
 
-    // 确认按钮
-    const okBtn = h("button", { class: "anno-apply", onclick: () => applyAnnotationFromBar(sel) }, "标注");
+    const okBtn = h("button", { class: "anno-apply", onclick: () => applyAnnotationFromBar() }, "标注");
     annoBar.appendChild(hlBtn);
     annoBar.appendChild(ulBtn);
     annoBar.appendChild(colorsRow);
     annoBar.appendChild(okBtn);
     document.body.appendChild(annoBar);
   }
-  // 定位到选区附近
-  const range = sel.getRangeAt(0);
-  const rect = range.getBoundingClientRect();
-  const top = Math.max(8, rect.top - 56);
-  const left = Math.max(8, Math.min(window.innerWidth - 200, rect.left + rect.width / 2 - 100));
+  // 定位到选区附近（选区靠近顶部时放在选区下方，避免遮住内容）
+  const top = rect.top < 90 ? rect.bottom + 8 : rect.top - 56;
+  const left = Math.max(8, Math.min(window.innerWidth - 210, rect.left + rect.width / 2 - 100));
   annoBar.style.top = top + "px";
   annoBar.style.left = left + "px";
   annoBar.style.display = "flex";
-  annoBar.sel = sel;
+  annoBar.text = text;
 }
 
+// 只隐藏不清空 text：手机上点击"标注"按钮时选区先被浏览器清空，
+// 若此时清空 text，按钮点击将拿不到文本导致标注失效
 function hideAnnoBar() {
-  if (annoBar) {
-    annoBar.style.display = "none";
-    annoBar.sel = null;
-  }
+  if (annoBar) annoBar.style.display = "none";
 }
 
-async function applyAnnotationFromBar(sel) {
-  if (!annoBar || !annoBar.sel) return;
-  const text = sel.toString().trim();
+async function applyAnnotationFromBar() {
+  if (!annoBar) return;
+  const text = annoBar.text;
   if (!text) return;
   const mode = annoBar.dataset.mode || "highlight";
   const color = annoBar.dataset.color || "#ffeb3b";
-  const ci = currentChapterIndex(layer.querySelector(".reader-content"));
+  const content = layer.querySelector(".reader-content");
+  if (!content) return;
+  const ci = currentChapterIndex(content);
   // 去重：同章节同文本同类型同颜色已存在则跳过
   const dup = session.annotations.find(
     (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
@@ -351,9 +367,9 @@ async function applyAnnotationFromBar(sel) {
   await db.put("annotations", anno);
   session.annotations.push(anno);
   hideAnnoBar();
+  annoBar.text = null; // 标注完成，清除快照避免误用
   // 清除选区，重新渲染当前章节
-  sel.removeAllRanges();
-  const content = layer.querySelector(".reader-content");
+  window.getSelection()?.removeAllRanges();
   const scrollTop = content.scrollTop;
   renderContent(content, session.book, session.annotations);
   applyContentStyle(content, session.settings);
@@ -494,6 +510,7 @@ function closeReader() {
   flush();
   if (session && session.flushTimer) clearInterval(session.flushTimer);
   document.removeEventListener("visibilitychange", onVisibility);
+  document.removeEventListener("selectionchange", onSelectionChange);
   window.removeEventListener("beforeunload", flush);
   hideAnnoBar();
   if (annoBar) { annoBar.remove(); annoBar = null; }
