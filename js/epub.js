@@ -29,6 +29,19 @@ export async function parseEpub(buf) {
     manifest[id] = entry;
     manifest[id.toLowerCase()] = entry; // spine 的 idref 大小写偶发不一致时也能命中
   });
+  // 收集图片 → data:URI，供章节 HTML 内联替换 img src
+  const imageMap = {};
+  for (const [id, entry] of Object.entries(manifest)) {
+    if (!/^image\//.test(entry.type)) continue;
+    const imgPath = normalize(dir + entry.href).toLowerCase();
+    const imgData = zip.get(imgPath);
+    if (!imgData) continue;
+    const b64 = uint8ToBase64(imgData);
+    const uri = `data:${entry.type};base64,${b64}`;
+    imageMap[imgPath] = uri;
+    imageMap[entry.href.toLowerCase()] = uri; // 也存 href 原文（相对路径查找备用）
+  }
+
   const order = [...opf.querySelectorAll("spine > itemref")].map((r) => r.getAttribute("idref"));
 
   const chapters = [];
@@ -51,7 +64,7 @@ export async function parseEpub(buf) {
     // 而 application/xhtml+xml 严格 XML 模式遇到 &nbsp; 等未定义实体会返回 parsererror 导致正文丢失。
     const doc = new DOMParser().parseFromString(new TextDecoder("utf-8").decode(data), "text/html");
     const body = doc.body || doc.documentElement;
-    const { title: ctitle, html } = extractHtml(body);
+    const { title: ctitle, html } = preserveHtml(body, imageMap, dir);
     chapters.push({ title: ctitle || `第 ${chapters.length + 1} 节`, html });
   }
   if (!chapters.length) throw new Error("EPUB 未解析出正文");
@@ -85,36 +98,45 @@ export async function parseFb2(buf) {
   return { title, author, chapters };
 }
 
-// ---------------- 通用提取 ----------------
-function extractHtml(body) {
+// ---------------- HTML 保留（保留图片和富文本格式）----------------
+function preserveHtml(body, imageMap, dir) {
   let title = "";
+  // 标记第一个标题供目录/导航使用
   const heading = body.querySelector("h1,h2,h3,h4,h5,h6");
-  if (heading) title = heading.textContent.replace(/\s+/g, " ").trim();
-  const paras = [];
-  body.querySelectorAll("p, li, blockquote, h1, h2, h3, h4, h5, h6").forEach((el) => {
-    const t = el.textContent.replace(/\s+/g, " ").trim();
-    if (t) paras.push(escapeHtml(t));
-  });
-  if (!paras.length) {
-    const t = body.textContent.replace(/\s+/g, " ").trim();
-    if (t) paras.push(escapeHtml(t));
+  if (heading) {
+    title = heading.textContent.replace(/\s+/g, " ").trim();
+    heading.classList.add("r-ch");
   }
-  const html = `<h2 class="r-ch">${escapeHtml(title)}</h2>` + paras.map((p) => `<p>${p}</p>`).join("");
+
+  // 保留完整 innerHTML（图片、粗体、斜体、链接等），只清理脚本和替换图片路径
+  let html = body.innerHTML || "";
+  // 去掉 script / iframe / object / embed
+  html = html.replace(/<(script|iframe|object|embed)\b[\s\S]*?<\/\1>/gi, "");
+  // 替换 img src 为内联 data:URI（显示 EPUB 内图片）
+  html = html.replace(/<img\s[^>]*src\s*=\s*["']([^"']+)["'][^>]*>/gi, (full, src) => {
+    const imgPath = normalize(dir + src).toLowerCase();
+    const uri = imageMap[imgPath] || imageMap[src.toLowerCase()];
+    if (uri) return full.replace(src, uri);
+    // 文件名尾匹配备用
+    const fn = (src.split("/").pop() || "").toLowerCase();
+    for (const [k, v] of Object.entries(imageMap)) {
+      if (k.endsWith("/" + fn)) return full.replace(src, v);
+    }
+    return full; // 找不到则保留原样（外部图片等）
+  });
+  // 若内文完全无标题，兜底一个
+  if (!title) {
+    const anyH = body.querySelector("h1,h2,h3,h4,h5,h6");
+    if (anyH) title = anyH.textContent.replace(/\s+/g, " ").trim();
+  }
   return { title, html };
 }
 
-function extractFb2(sec, hasTitleTag) {
-  const paras = [];
-  const nodes = sec.querySelectorAll("p, subtitle, text-author, cite, th, td");
-  nodes.forEach((el) => {
-    const t = el.textContent.replace(/\s+/g, " ").trim();
-    if (t) paras.push(escapeHtml(t));
-  });
-  if (!paras.length) {
-    const t = sec.textContent.replace(/\s+/g, " ").trim();
-    if (t) paras.push(escapeHtml(t));
-  }
-  return paras.map((p) => `<p>${p}</p>`).join("");
+function uint8ToBase64(u8) {
+  let binary = "";
+  const len = u8.length;
+  for (let i = 0; i < len; i++) binary += String.fromCharCode(u8[i]);
+  return btoa(binary);
 }
 
 function textOf(doc, tag) {
