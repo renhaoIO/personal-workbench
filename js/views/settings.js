@@ -2,6 +2,7 @@
 import { db } from "../db.js";
 import { h, toast, openModal, closeModal, confirmDialog } from "../util.js";
 import { openCategoryManager } from "./categories.js";
+import { APP_VERSION, BUILD } from "../version.js";
 
 function download(filename, text) {
   const blob = new Blob([text], { type: "application/json" });
@@ -152,7 +153,7 @@ export async function openSettings() {
         } }, "清空全部数据")
     ),
     h("div", { class: "muted", style: "margin-top:6px; line-height:1.6;" },
-      "个人工作台 v1 · 本地优先 · 离线可用",
+      `个人工作台 v${APP_VERSION}（构建 ${BUILD}）· 本地优先 · 离线可用`,
       h("br", {}),
       "数据仅保存在你的浏览器/手机本地（IndexedDB）。卸载或清缓存会丢失，记得定期导出备份。"
     ),
