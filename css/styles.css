@@ -136,7 +136,7 @@
 
 /* ---------- 重置 & 基础 ---------- */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; padding: 0; min-height: 100%; }
+html, body { margin: 0; padding: 0; min-height: 100%; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   font-family: var(--font);
   font-size: 15px;
@@ -570,7 +570,7 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
 
 /* ─── 批注浮动工具栏 ─── */
 .anno-bar {
-  position: fixed; z-index: 55; display: none; align-items: center; gap: 6px;
+  position: fixed; z-index: 120; display: none; align-items: center; gap: 6px;
   padding: 8px 12px; border-radius: 12px; background: var(--surface);
   border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,.18);
   font-size: 13px; flex-wrap: nowrap;
@@ -581,6 +581,12 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
 .anno-color { width: 20px; height: 20px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: border-color .15s; }
 .anno-color.on { border-color: var(--text); }
 .anno-apply { padding: 5px 12px; border-radius: 8px; border: none; background: var(--primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+/* 书签内联删除确认（阅读界面内完成，不弹全局弹窗） */
+.bm-del-btn { padding: 3px 11px; border-radius: 7px; border: 1px solid var(--border); font-size: 12px; cursor: pointer; margin-left: 7px; background: var(--bg); color: var(--text); }
+.bm-del-btn.yes { background: #e5484d; color: #fff; border-color: transparent; }
+.bm-del-btn.no { color: var(--text-soft); }
+.bm-del-btn:active { opacity: .8; }
 
 /* ─── 批注样式（高亮 & 下划线）─── */
 .anno-hl { background-color: var(--anno-color, #ffeb3b); border-radius: 2px; padding: 0 1px; }
