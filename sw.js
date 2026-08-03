@@ -1,4 +1,4 @@
-const CACHE = "workbench-v15";
+const CACHE = "workbench-v16";
 const ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const ASSETS = [
   "./js/app.js",
   "./js/db.js",
   "./js/util.js",
+  "./js/version.js",
   "./js/zip.js",
   "./js/epub.js",
   "./js/views/tasks.js",
