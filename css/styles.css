@@ -533,3 +533,59 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
 .reader-layer.theme-sepia .reader-top,
 .reader-layer.theme-sepia .reader-bottom { background: #efe6d0; color: #4a3f35; border-color: #d8cdb0; }
 .reader-layer.theme-sepia .reader-nav { background: #e3d7ba; color: #4a3f35; }
+
+/* ─── 阅读器顶栏按钮组 ─── */
+.reader-top-actions { display: flex; gap: 4px; align-items: center; }
+
+/* ─── 章节包裹 & 图片 ─── */
+.reader-chapter { margin-bottom: 32px; }
+/* 第一个章节不加顶部间距 */
+.reader-chapter:first-child { margin-top: 0; }
+.reader-content img {
+  max-width: 100%; height: auto; display: block; margin: 12px auto;
+  border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.1);
+}
+
+/* ─── 目录面板 ─── */
+.reader-toc, .reader-bookmarks {
+  position: fixed; top: 0; bottom: 0; left: 0; width: 280px; max-width: 85vw;
+  background: var(--surface); z-index: 50; overflow-y: auto; padding: 14px 16px;
+  border-right: 1px solid var(--border); box-shadow: 4px 0 16px rgba(0,0,0,.12);
+  animation: slideInRight .2s ease;
+}
+@keyframes slideInRight { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+.toc-item {
+  display: flex; gap: 10px; padding: 10px 8px; font-size: 14px; cursor: pointer;
+  border-radius: 8px; align-items: flex-start; transition: background .15s;
+}
+.toc-item:active { background: var(--bg); }
+.toc-num { color: var(--primary); font-weight: 700; font-variant-numeric: tabular-nums; min-width: 24px; text-align: right; }
+.toc-title { flex: 1; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+/* ─── 书签面板 ─── */
+.bm-item { padding: 10px 8px; cursor: pointer; border-radius: 8px; border-bottom: 1px solid var(--border); transition: background .15s; }
+.bm-item:active { background: var(--bg); }
+.bm-title { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bm-meta { font-size: 12px; color: var(--text-soft); display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
+
+/* ─── 批注浮动工具栏 ─── */
+.anno-bar {
+  position: fixed; z-index: 55; display: none; align-items: center; gap: 6px;
+  padding: 8px 12px; border-radius: 12px; background: var(--surface);
+  border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,.18);
+  font-size: 13px; flex-wrap: nowrap;
+}
+.anno-type { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 14px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text); }
+.anno-type.on { border-color: var(--primary); color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, var(--bg)); }
+.anno-colors { display: flex; gap: 4px; }
+.anno-color { width: 20px; height: 20px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: border-color .15s; }
+.anno-color.on { border-color: var(--text); }
+.anno-apply { padding: 5px 12px; border-radius: 8px; border: none; background: var(--primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+/* ─── 批注样式（高亮 & 下划线）─── */
+.anno-hl { background-color: var(--anno-color, #ffeb3b); border-radius: 2px; padding: 0 1px; }
+.anno-ul { text-decoration-line: underline; text-decoration-color: var(--anno-color, #ff5252); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+/* 夜间 / 护眼模式下批注色适配 */
+.r-theme-night .anno-hl { opacity: .85; }
+.r-theme-night .anno-ul { text-decoration-thickness: 2px; }
+.r-theme-sepia .anno-hl { opacity: .8; }
