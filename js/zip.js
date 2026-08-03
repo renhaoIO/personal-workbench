@@ -36,7 +36,11 @@ export async function unzip(buf) {
     else if (method === 8) data = await inflate(comp);
     else data = comp.slice(); // 其它方式（如 deflate64）暂按原样返回
 
-    out.set(normalizeName(name), data);
+    const key = normalizeName(name);
+    // 精确键 + 小写键双写：真实 EPUB 常出现 OPF 引用小写、zip 内大写的情况，
+    // 大小写不敏感查找可避免「章节全部找不到 → 未解析出正文」的导入失败。
+    out.set(key, data);
+    out.set(key.toLowerCase(), data);
     p += 46 + fnLen + exLen + cmLen;
   }
   return out;
