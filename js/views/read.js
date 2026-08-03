@@ -376,18 +376,16 @@ function onSelectionChange() {
 }
 
 function checkSelection() {
-  // 用户正在工具栏内操作（选颜色等），不因选区清空而关闭
-  if (annoBar && annoBar._active) return;
+  // 只负责显示工具栏，不负责隐藏（点击内容/标注完成/滚动才隐藏），
+  // 彻底避免点颜色/标注按钮时选区被浏览器清空导致工具栏误关
   const sel = window.getSelection();
-  if (!sel || !sel.rangeCount) { hideAnnoBar(); return; }
+  if (!sel || !sel.rangeCount) return;
   const text = sel.toString().trim();
-  if (text.length < 2) { hideAnnoBar(); return; }
-  // 选区必须在阅读内容区内
+  if (text.length < 2) return;
   const node = sel.anchorNode;
-  if (!node || !layer || !layer.contains(node)) { hideAnnoBar(); return; }
-  // 快照位置与文本（live selection 在点击按钮后可能失效）
+  if (!node || !layer || !layer.contains(node)) return;
   const rect = sel.getRangeAt(0).getBoundingClientRect();
-  if (!rect || (!rect.width && !rect.height)) { hideAnnoBar(); return; }
+  if (!rect || (!rect.width && !rect.height)) return;
   showAnnoBar(rect, text);
 }
 
@@ -437,15 +435,6 @@ function showAnnoBar(rect, text) {
     annoBar.appendChild(noteInput);
     annoBar.appendChild(okBtn);
     layer.appendChild(annoBar);
-    // 工具栏内操作时阻止 selectionchange 误关弹窗（点颜色色块会清除选区导致 checkSelection→hide）
-    annoBar.addEventListener("pointerdown", () => {
-      clearTimeout(annoBar._activeT);
-      annoBar._active = true;
-    });
-    annoBar.addEventListener("pointerup", () => {
-      clearTimeout(annoBar._activeT);
-      annoBar._activeT = setTimeout(() => { annoBar._active = false; }, 600);
-    });
   }
   annoBar.style.display = "flex";
   annoBar.text = text;
