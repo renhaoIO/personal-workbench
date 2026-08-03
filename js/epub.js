@@ -6,12 +6,12 @@ import { escapeHtml } from "./util.js";
 // ---------------- EPUB ----------------
 export async function parseEpub(buf) {
   const zip = await unzip(buf);
-  const container = zip.get("META-INF/container.xml");
+  const container = zip.get("META-INF/container.xml".toLowerCase());
   if (!container) throw new Error("EPUB 缺少 container.xml");
   const xml = new TextDecoder("utf-8").decode(container);
-  const opfPath = /full-path="([^"]+)"/.exec(xml)?.[1];
+  const opfPath = /full-path=["']([^"']+)["']/.exec(xml)?.[1];
   if (!opfPath) throw new Error("找不到 OPF 路径");
-  const opfBytes = zip.get(normalize(opfPath));
+  const opfBytes = zip.get(normalize(opfPath).toLowerCase());
   if (!opfBytes) throw new Error("找不到 OPF 文件");
   const opf = new DOMParser().parseFromString(new TextDecoder("utf-8").decode(opfBytes), "application/xml");
   const dir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
@@ -21,10 +21,13 @@ export async function parseEpub(buf) {
 
   const manifest = {};
   opf.querySelectorAll("manifest > item").forEach((it) => {
-    manifest[it.getAttribute("id")] = {
+    const entry = {
       href: it.getAttribute("href"),
       type: (it.getAttribute("media-type") || "").toLowerCase(),
     };
+    const id = it.getAttribute("id");
+    manifest[id] = entry;
+    manifest[id.toLowerCase()] = entry; // spine 的 idref 大小写偶发不一致时也能命中
   });
   const order = [...opf.querySelectorAll("spine > itemref")].map((r) => r.getAttribute("idref"));
 
@@ -32,11 +35,21 @@ export async function parseEpub(buf) {
   for (const id of order) {
     const m = manifest[id];
     if (!m) continue;
-    if (!/xhtml|html|svg|xml/.test(m.type)) continue; // 跳过图片 / css / 字体
-    const path = normalize(dir + m.href);
-    const data = zip.get(path);
+    let type = m.type;
+    if (!type) {
+      // OPF 未声明 media-type 时按扩展名推断
+      const ext = (m.href.split(".").pop() || "").toLowerCase();
+      type = ({ xhtml: "application/xhtml+xml", html: "text/html", htm: "text/html", xml: "application/xml" })[ext] || "";
+    }
+    if (!/xhtml|html|svg|xml/.test(type)) continue; // 跳过图片 / css / 字体
+    const href = m.href || "";
+    // 以 / 开头的 href 视为相对 zip 根（部分导出工具会这么写），否则相对 OPF 所在目录
+    const path = href.startsWith("/") ? normalize(href.slice(1)) : normalize(dir + href);
+    const data = zip.get(path.toLowerCase());
     if (!data) continue;
-    const doc = new DOMParser().parseFromString(new TextDecoder("utf-8").decode(data), "application/xhtml+xml");
+    // 用 text/html 解析：浏览器/WebView 的 HTML 解析器容错极强（HTML 实体、未闭合标签均不会失败），
+    // 而 application/xhtml+xml 严格 XML 模式遇到 &nbsp; 等未定义实体会返回 parsererror 导致正文丢失。
+    const doc = new DOMParser().parseFromString(new TextDecoder("utf-8").decode(data), "text/html");
     const body = doc.body || doc.documentElement;
     const { title: ctitle, html } = extractHtml(body);
     chapters.push({ title: ctitle || `第 ${chapters.length + 1} 节`, html });
