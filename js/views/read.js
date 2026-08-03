@@ -145,10 +145,13 @@ function buildContentArea(s) {
 // ============ 分页引擎 ============
 function buildPages(s) {
   const { book } = session;
-  const vw = layer.clientWidth, vh = layer.clientHeight;
+  // 用视口容器真实尺寸（不是整个 layer——layer 含顶栏+底栏，用它每页会超高）
+  const vp = layer.querySelector(".page-viewport");
+  if (!vp) return [];
+  const vw = vp.clientWidth || (layer.clientWidth - 4);
+  const vh = vp.clientHeight || (layer.clientHeight - 120);
   const pad = padOf(s);
-  const pageW = Math.max(200, vw - pad * 2);
-  const pageH = Math.max(200, vh - 18 - 40);
+  const pageH = Math.max(120, vh - 18 - 40);
 
   // 测量容器（与真实页同宽同样式，隐藏）
   const measurer = document.createElement("div");
@@ -249,8 +252,9 @@ function turnPage(dir) {
   session.animLock = true;
   if (anim === "slide") {
     nxt.style.transform = dir > 0 ? "translateX(100%)" : "translateX(-100%)";
-    cur.style.transition = "transform .3s ease";
-    nxt.style.transition = "transform .3s ease";
+    void vp.offsetHeight; // 强制 reflow：确保初始状态先布局，transition 才会生效
+    cur.style.transition = "transform .35s cubic-bezier(.25,.8,.35,1)";
+    nxt.style.transition = "transform .35s cubic-bezier(.25,.8,.35,1)";
     requestAnimationFrame(() => {
       cur.style.transform = dir > 0 ? "translateX(-100%)" : "translateX(100%)";
       nxt.style.transform = "translateX(0)";
@@ -258,8 +262,9 @@ function turnPage(dir) {
   } else { // flip 仿真：3D 翻页
     vp.classList.add("flip-on");
     nxt.style.transform = dir > 0 ? "rotateY(90deg)" : "rotateY(-90deg)";
-    cur.style.transition = "transform .45s ease";
-    nxt.style.transition = "transform .45s ease";
+    void vp.offsetHeight;
+    cur.style.transition = "transform .5s cubic-bezier(.4,0,.3,1)";
+    nxt.style.transition = "transform .5s cubic-bezier(.4,0,.3,1)";
     requestAnimationFrame(() => {
       cur.style.transform = dir > 0 ? "rotateY(-90deg)" : "rotateY(90deg)";
       nxt.style.transform = "rotateY(0deg)";
@@ -271,7 +276,7 @@ function turnPage(dir) {
     vp.innerHTML = `<div class="page-cur" style="padding-left:${pad};padding-right:${pad}">${pages[next].html}</div>`;
     session.animLock = false;
     updateAfterTurn();
-  }, anim === "slide" ? 320 : 470);
+  }, anim === "slide" ? 380 : 520);
 }
 
 function updateAfterTurn() {
