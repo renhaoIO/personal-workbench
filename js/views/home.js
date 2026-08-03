@@ -5,12 +5,18 @@ import { h, fmtDate, fmtTime, toast, openModal, closeModal, confirmDialog } from
 let clockTimer = null;
 
 function aggSessions() {
-  return db.getAll("pomodoro").then((all) => {
-    const work = all.filter((s) => s.type === "work");
+  return Promise.all([db.getAll("pomodoro"), db.getAll("readingLog")]).then(([all, logs]) => {
     const byDate = {};
-    for (const s of work) {
+    // 专注时长
+    for (const s of all) {
+      if (s.type !== "work") continue;
       const d = fmtDate(s.startedAt);
       byDate[d] = (byDate[d] || 0) + (s.durationSec || 0);
+    }
+    // 阅读时长（计入热力图）
+    for (const l of logs) {
+      const d = fmtDate(l.ts);
+      byDate[d] = (byDate[d] || 0) + (l.durationSec || 0);
     }
     return byDate;
   });
@@ -32,6 +38,9 @@ export async function renderHome(root) {
   const todayPomo = (await db.getAll("pomodoro")).filter(
     (s) => s.type === "work" && fmtDate(s.startedAt) === todayKey
   ).length;
+  const todayRead = (await db.getAll("readingLog")).filter(
+    (l) => fmtDate(l.ts) === todayKey
+  ).reduce((a, l) => a + (l.durationSec || 0), 0);
 
   // 连续天数
   let streak = 0;
@@ -45,7 +54,8 @@ export async function renderHome(root) {
   // ---- 时钟 ----
   const timeEl = h("div", { class: "clock-time" }, "--:--:--");
   const dateEl = h("div", { class: "clock-date" });
-  const statusEl = h("div", { class: "clock-status muted" }, `今日专注 ${Math.round(todaySec / 60)} 分钟 · ${todayPomo} 个番茄 · 连续 ${streak} 天`);
+  const statusEl = h("div", { class: "clock-status muted" },
+    `今日累计 ${Math.round(todaySec / 60)} 分钟（专注 ${Math.round((todaySec - todayRead) / 60)}′ · 阅读 ${Math.round(todayRead / 60)}′）· ${todayPomo} 个番茄 · 连续 ${streak} 天`);
   function tick() {
     const n = new Date();
     const p = (x) => String(x).padStart(2, "0");
@@ -97,7 +107,7 @@ export async function renderHome(root) {
     h("span", {}, "多")
   );
 
-  root.appendChild(h("h2", { class: "section" }, "专注热力图（近半年）"));
+  root.appendChild(h("h2", { class: "section" }, "专注 · 阅读热力图（近半年）"));
   root.appendChild(h("div", { class: "card" }, heatWrap, legend));
 
   // ---- 今日待办 ----
@@ -137,6 +147,8 @@ async function dayDetail(key) {
 
   const pomo = (await db.getAll("pomodoro")).filter((s) => s.type === "work" && fmtDate(s.startedAt) === key);
   const min = Math.round(pomo.reduce((a, s) => a + (s.durationSec || 0), 0) / 60);
+  const reads = (await db.getAll("readingLog")).filter((l) => l.ts >= start && l.ts <= end);
+  const readMin = Math.round(reads.reduce((a, l) => a + (l.durationSec || 0), 0) / 60);
 
   const tasksAll = await db.getAll("tasks");
   const done = tasksAll.filter((t) => t.completedAt && t.completedAt >= start && t.completedAt <= end);
@@ -150,6 +162,7 @@ async function dayDetail(key) {
 
   const rows = [];
   rows.push(detailRow("🍅", "专注时长", `${pomo.length} 个番茄`, `${min}′`));
+  rows.push(detailRow("📖", "阅读时长", readMin ? `${readMin} 分钟` : "无", readMin ? `${readMin}′` : "—"));
   rows.push(detailRow("✅", "完成任务", done.length ? titleOf(done) : "无", String(done.length)));
   rows.push(detailRow("📋", "新增任务", created.length ? titleOf(created) : "无", String(created.length)));
   rows.push(detailRow("⚡", "速记", caps.length ? `${caps.length} 条灵感` : "无", String(caps.length)));
