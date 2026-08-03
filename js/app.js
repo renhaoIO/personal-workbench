@@ -167,7 +167,17 @@ async function init() {
   // 原生包（Capacitor）下用本地服务器加载，无需 Service Worker 离线缓存
   if (!window.Capacitor && "serviceWorker" in navigator) {
     try {
-      await navigator.serviceWorker.register("./sw.js");
+      const reg = await navigator.serviceWorker.register("./sw.js");
+      // 主动检查更新（cache-first 策略下浏览器只在导航时检查 SW，长时间开着的页面不会自动更新）
+      reg.update();
+      // 新 SW 接管页面后自动刷新一次，确保用户看到最新版本
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        toast("发现新版本，正在刷新…");
+        setTimeout(() => location.reload(), 600);
+      });
     } catch (e) {
       console.warn("SW 注册失败", e);
     }
