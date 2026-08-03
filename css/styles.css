@@ -646,3 +646,25 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
   0%, 100% { box-shadow: 0 0 0 0 transparent; }
   50% { box-shadow: 0 0 0 4px var(--primary); border-radius: 4px; }
 }
+
+/* ─── 分页翻页模式 ─── */
+.page-viewport {
+  flex: 1; overflow: hidden; position: relative; background: var(--surface); color: var(--text);
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+}
+.page-viewport.flip-on { perspective: 1500px; }
+.page-cur, .page-next {
+  position: absolute; inset: 0; overflow-y: auto; padding-top: 18px; padding-bottom: 40px;
+  background: var(--surface); color: var(--text); transform-origin: left center;
+  -webkit-overflow-scrolling: touch;
+}
+.page-cur { z-index: 1; }
+.page-next { z-index: 2; }
+.page-cur img, .page-next img { max-width: 100%; height: auto; display: block; margin: 12px auto; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+/* 翻页动画中禁止选中/点击误触 */
+.page-cur.anim, .page-next.anim { pointer-events: none; }
+/* 夜间/护眼下分页底色跟随主题 */
+.page-viewport.r-theme-night .page-cur,
+.page-viewport.r-theme-night .page-next { background: #1b1e24; color: #cfd2d8; }
+.page-viewport.r-theme-sepia .page-cur,
+.page-viewport.r-theme-sepia .page-next { background: #efe6d0; color: #4a3f35; }
