@@ -2,11 +2,11 @@
 import { uid } from "./util.js";
 
 const DB_NAME = "personal-workbench";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 // categories.kind: "task" | "diary" | "book"
 // workouts: 健身训练计划与动作；books: 本地图书；readingLog: 阅读时长记录
-export const STORES = ["tasks", "captures", "notes", "pomodoro", "diary", "categories", "settings", "workouts", "books", "readingLog"];
+export const STORES = ["tasks", "captures", "notes", "pomodoro", "diary", "categories", "settings", "workouts", "books", "readingLog", "bookmarks", "annotations"];
 
 let dbp = null;
 function openDB() {
