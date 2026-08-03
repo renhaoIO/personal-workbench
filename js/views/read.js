@@ -176,6 +176,7 @@ function openPanel(cls) {
   // 关闭所有面板
   layer.querySelectorAll(".reader-toc,.reader-bookmarks,.reader-settings,.reader-annotations").forEach((p) => p.style.display = "none");
   hideAnnoBar();
+  closeAnnoEditor();
   if (!visible) existing.style.display = "block";
 }
 function closePanel() {
@@ -425,22 +426,129 @@ function showAnnoBar(rect, text) {
     });
     annoBar.dataset.color = HL_COLORS[0].v;
 
-    // 文字笔记输入
-    const noteInput = h("input", { class: "anno-note", placeholder: "笔记(选填)", type: "text" });
-
+    // 快速标注（无笔记）
     const okBtn = h("button", { class: "anno-apply", onclick: () => applyAnnotationFromBar() }, "标注");
+    // 写笔记 → 弹出独立编辑界面（Jane Reader 风格）
+    const noteBtn = h("button", { class: "anno-note-btn", title: "写笔记", onclick: () => openAnnoEditor() }, "📝 笔记");
     annoBar.appendChild(hlBtn);
     annoBar.appendChild(ulBtn);
     annoBar.appendChild(colorsRow);
-    annoBar.appendChild(noteInput);
     annoBar.appendChild(okBtn);
+    annoBar.appendChild(noteBtn);
     layer.appendChild(annoBar);
   }
   annoBar.style.display = "flex";
   annoBar.text = text;
-  // 清空笔记输入
-  const ni = annoBar.querySelector(".anno-note");
-  if (ni) ni.value = "";
+}
+
+// ============ 笔记编辑器（Jane Reader 风格底部弹窗）============
+function openAnnoEditor() {
+  if (!annoBar || !annoBar.text) { toast("请先选中文字"); return; }
+  closeAnnoEditor(); // 防止重复
+  const text = annoBar.text;
+  const mode = annoBar.dataset.mode || "highlight";
+  const color = annoBar.dataset.color || HL_COLORS[0].v;
+
+  const mask = h("div", { class: "anno-editor-mask", onclick: closeAnnoEditor });
+  const sheet = h("div", { class: "anno-editor" });
+  sheet.dataset.mode = mode;
+  sheet.dataset.color = color;
+
+  // 标题
+  sheet.appendChild(h("div", { class: "ae-head" },
+    h("div", { class: "ae-title" }, "笔记"),
+    h("button", { class: "icon-btn", style: "width:30px;height:30px;", onclick: closeAnnoEditor }, "✕")
+  ));
+
+  // 引用文字
+  sheet.appendChild(h("div", { class: "ae-quote" },
+    h("div", { class: "ae-label" }, "引用"),
+    h("div", { class: "ae-quote-text" }, text)
+  ));
+
+  // 标注类型分段
+  const typeSeg = h("div", { class: "seg" },
+    segBtn("highlight", "荧光笔"), segBtn("underline", "下划线"));
+  sheet.appendChild(h("div", { class: "ae-label" }, "标注类型"));
+  sheet.appendChild(typeSeg);
+
+  // 颜色
+  const colorsRow = h("div", { class: "anno-colors", style: "margin-top:8px;" });
+  HL_COLORS.forEach((c, i) => {
+    const dot = h("span", { class: "anno-color" + (c.v === color ? " on" : ""), style: `background:${c.v}`, title: c.n });
+    dot.addEventListener("click", () => {
+      colorsRow.querySelectorAll(".anno-color").forEach((d) => d.classList.remove("on"));
+      dot.classList.add("on");
+      sheet.dataset.color = c.v;
+    });
+    colorsRow.appendChild(dot);
+  });
+  sheet.appendChild(colorsRow);
+
+  // 笔记正文
+  sheet.appendChild(h("div", { class: "ae-label", style: "margin-top:14px;" }, "我的笔记"));
+  const note = h("textarea", { class: "ae-note", placeholder: "写下你的想法…", rows: 4 });
+  sheet.appendChild(note);
+
+  // 按钮
+  sheet.appendChild(h("div", { class: "row", style: "gap:10px;margin-top:14px;" },
+    h("button", { class: "btn ghost", style: "flex:1", onclick: closeAnnoEditor }, "取消"),
+    h("button", { class: "btn", style: "flex:1", onclick: () => saveAnnoFromEditor() }, "保存")
+  ));
+
+  layer.appendChild(mask);
+  layer.appendChild(sheet);
+  setTimeout(() => note.focus(), 150);
+
+  function segBtn(v, label) {
+    const b = h("button", { class: sheet.dataset.mode === v ? "on" : "", onclick: () => {
+      sheet.dataset.mode = v;
+      [...typeSeg.children].forEach((c) => c.classList.toggle("on", c === b));
+    } }, label);
+    return b;
+  }
+}
+
+function closeAnnoEditor() {
+  const mask = layer && layer.querySelector(".anno-editor-mask");
+  const sheet = layer && layer.querySelector(".anno-editor");
+  if (mask) mask.remove();
+  if (sheet) sheet.remove();
+}
+
+async function saveAnnoFromEditor() {
+  if (!annoBar) return;
+  const text = annoBar.text;
+  if (!text) { toast("未选中文字"); closeAnnoEditor(); return; }
+  const sheet = layer.querySelector(".anno-editor");
+  if (!sheet) return;
+  const mode = sheet.dataset.mode || "highlight";
+  const color = sheet.dataset.color || HL_COLORS[0].v;
+  const note = (sheet.querySelector(".ae-note")?.value || "").trim();
+  const content = layer.querySelector(".reader-content");
+  if (!content) return;
+  const ci = currentChapterIndex(content);
+  const dup = session.annotations.find(
+    (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
+      a.selectedText === text && a.type === mode && a.color === color
+  );
+  if (dup) { toast("该批注已存在"); closeAnnoEditor(); return; }
+  const anno = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    bookId: session.book.id, chapterIndex: ci, selectedText: text,
+    type: mode, color, note, createdAt: Date.now(),
+  };
+  await db.put("annotations", anno);
+  session.annotations.push(anno);
+  closeAnnoEditor();
+  hideAnnoBar();
+  annoBar.text = null;
+  window.getSelection()?.removeAllRanges();
+  const st = content.scrollTop;
+  renderContent(content, session.book, session.annotations);
+  applyContentStyle(content, session.settings);
+  content.scrollTop = st;
+  toast(note ? "已保存批注笔记" : "已保存批注");
 }
 
 
@@ -456,8 +564,7 @@ async function applyAnnotationFromBar() {
   if (!text) return;
   const mode = annoBar.dataset.mode || "highlight";
   const color = annoBar.dataset.color || "#ffeb3b";
-  const noteInput = annoBar.querySelector(".anno-note");
-  const note = noteInput ? noteInput.value.trim() : "";
+  const note = ""; // 快速标注不带笔记；写笔记走独立编辑器
   const content = layer.querySelector(".reader-content");
   if (!content) return;
   const ci = currentChapterIndex(content);
@@ -620,6 +727,7 @@ function closeReader() {
   document.removeEventListener("selectionchange", onSelectionChange);
   window.removeEventListener("beforeunload", flush);
   hideAnnoBar();
+  closeAnnoEditor();
   if (annoBar) { annoBar.remove(); annoBar = null; }
   if (layer) { layer.remove(); layer = null; }
   document.body.classList.remove("reading");
