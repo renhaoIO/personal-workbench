@@ -294,7 +294,12 @@ function refreshAnnoList() {
         h("span", { class: "anno-note-text", title: a.note || "", onclick: (ev) => { ev.stopPropagation(); editAnnoNote(a, item); } }, a.note || "＋笔记"),
         h("button", { class: "icon-btn", style: "font-size:13px;width:28px;height:28px;", title: "删除", onclick: (ev) => { ev.stopPropagation(); confirmRemoveAnno(a, item); } }, "✕")
       );
-      item.addEventListener("click", () => { jumpToAnno(a); closePanel(); });
+      item.addEventListener("click", () => {
+        // 点击批注：打开详情弹窗（查看/修改笔记、删除）+ 正文滚动到批注位置
+        openAnnoEditor(a);
+        jumpToAnno(a);
+        closePanel();
+      });
       list.appendChild(item);
     });
   });
@@ -308,8 +313,10 @@ function jumpToAnno(a) {
   // 在章节内定位批注文本的精确位置
   const range = findTextRange(ch, a.selectedText);
   if (range) {
+    // 基于 range 与 content 的视口坐标差值计算滚动位置（不依赖 offsetTop，offsetTop 相对祖先不可靠）
     const rect = range.getBoundingClientRect();
-    const target = ch.offsetTop + (rect.top - content.getBoundingClientRect().top) + content.scrollTop - 60;
+    const contentRect = content.getBoundingClientRect();
+    const target = content.scrollTop + (rect.top - contentRect.top) - 60;
     content.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
     flashAnno(range);
   } else {
@@ -492,13 +499,14 @@ function showAnnoBar(rect, text) {
   annoBar.text = text;
 }
 
-// ============ 笔记编辑器（Jane Reader 风格底部弹窗）============
-function openAnnoEditor() {
-  if (!annoBar || !annoBar.text) { toast("请先选中文字"); return; }
+// ============ 笔记编辑器（Jane Reader 风格底部弹窗；anno 为空=新建，否则=编辑已有批注）============
+function openAnnoEditor(anno) {
+  const isEdit = !!anno;
+  const text = isEdit ? anno.selectedText : (annoBar && annoBar.text);
+  if (!text) { toast("请先选中文字"); return; }
   closeAnnoEditor(); // 防止重复
-  const text = annoBar.text;
-  const mode = annoBar.dataset.mode || "highlight";
-  const color = annoBar.dataset.color || HL_COLORS[0].v;
+  const mode = isEdit ? anno.type : (annoBar.dataset.mode || "highlight");
+  const color = isEdit ? anno.color : (annoBar.dataset.color || HL_COLORS[0].v);
 
   const mask = h("div", { class: "anno-editor-mask", onclick: closeAnnoEditor });
   const sheet = h("div", { class: "anno-editor" });
@@ -507,7 +515,7 @@ function openAnnoEditor() {
 
   // 标题
   sheet.appendChild(h("div", { class: "ae-head" },
-    h("div", { class: "ae-title" }, "笔记"),
+    h("div", { class: "ae-title" }, isEdit ? "批注详情" : "笔记"),
     h("button", { class: "icon-btn", style: "width:30px;height:30px;", onclick: closeAnnoEditor }, "✕")
   ));
 
@@ -539,13 +547,16 @@ function openAnnoEditor() {
   // 笔记正文
   sheet.appendChild(h("div", { class: "ae-label", style: "margin-top:14px;" }, "我的笔记"));
   const note = h("textarea", { class: "ae-note", placeholder: "写下你的想法…", rows: 4 });
+  if (isEdit && anno.note) note.value = anno.note;
   sheet.appendChild(note);
 
-  // 按钮
-  sheet.appendChild(h("div", { class: "row", style: "gap:10px;margin-top:14px;" },
+  // 按钮：编辑模式带删除
+  const btns = h("div", { class: "row", style: "gap:10px;margin-top:14px;" },
+    isEdit ? h("button", { class: "btn danger", style: "flex:1", onclick: () => delAnnoFromEditor(anno) }, "删除") : null,
     h("button", { class: "btn ghost", style: "flex:1", onclick: closeAnnoEditor }, "取消"),
-    h("button", { class: "btn", style: "flex:1", onclick: () => saveAnnoFromEditor() }, "保存")
-  ));
+    h("button", { class: "btn", style: "flex:1", onclick: () => saveAnnoFromEditor(anno) }, "保存")
+  );
+  sheet.appendChild(btns);
 
   layer.appendChild(mask);
   layer.appendChild(sheet);
@@ -567,10 +578,7 @@ function closeAnnoEditor() {
   if (sheet) sheet.remove();
 }
 
-async function saveAnnoFromEditor() {
-  if (!annoBar) return;
-  const text = annoBar.text;
-  if (!text) { toast("未选中文字"); closeAnnoEditor(); return; }
+async function saveAnnoFromEditor(targetAnno) {
   const sheet = layer.querySelector(".anno-editor");
   if (!sheet) return;
   const mode = sheet.dataset.mode || "highlight";
@@ -578,6 +586,25 @@ async function saveAnnoFromEditor() {
   const note = (sheet.querySelector(".ae-note")?.value || "").trim();
   const content = layer.querySelector(".reader-content");
   if (!content) return;
+
+  if (targetAnno) {
+    // 编辑已有批注：更新类型/颜色/笔记并重渲染
+    targetAnno.type = mode;
+    targetAnno.color = color;
+    targetAnno.note = note;
+    await db.put("annotations", targetAnno);
+    closeAnnoEditor();
+    const st = content.scrollTop;
+    renderContent(content, session.book, session.annotations);
+    applyContentStyle(content, session.settings);
+    content.scrollTop = st;
+    toast("批注已更新");
+    return;
+  }
+
+  // 新建
+  const text = annoBar ? annoBar.text : "";
+  if (!text) { toast("未选中文字"); closeAnnoEditor(); return; }
   const ci = currentChapterIndex(content);
   const dup = session.annotations.find(
     (a) => a.bookId === session.book.id && a.chapterIndex === ci &&
@@ -600,6 +627,21 @@ async function saveAnnoFromEditor() {
   applyContentStyle(content, session.settings);
   content.scrollTop = st;
   toast(note ? "已保存批注笔记" : "已保存批注");
+}
+
+async function delAnnoFromEditor(anno) {
+  await db.del("annotations", anno.id);
+  session.annotations = session.annotations.filter((x) => x.id !== anno.id);
+  closeAnnoEditor();
+  const content = layer.querySelector(".reader-content");
+  if (content) {
+    const st = content.scrollTop;
+    renderContent(content, session.book, session.annotations);
+    applyContentStyle(content, session.settings);
+    content.scrollTop = st;
+  }
+  toast("已删除批注");
+  refreshAnnoList();
 }
 
 
