@@ -57,6 +57,20 @@ function updateFloat() {
 // 路由变化后由 app.js 调用，刷新悬浮球可见性
 window.__pomoFloatSync = updateFloat;
 
+// ============ 原生桥同步（APK 版：系统悬浮窗 + 通知栏）============
+// 运行中且开启悬浮窗 → 启动原生前台服务（原生侧计时，后台不被冻结）；
+// 否则停止。PWA 版无 window.PomoBridge，此函数空转。
+function syncBridge() {
+  if (!window.PomoBridge) return;
+  try {
+    if (running && settings.pomoFloat) {
+      window.PomoBridge.startPomo(endTime, modeLabel(mode));
+    } else {
+      window.PomoBridge.stopPomo();
+    }
+  } catch (e) {}
+}
+
 // 阶段切换提示音：workDone=专注结束(上升三音) / breakDone=休息结束(下降两音)
 function chime(kind) {
   try {
@@ -123,8 +137,21 @@ export async function renderPomodoro(root) {
     settings.pomoFloat = !settings.pomoFloat;
     await db.setSetting("pomoFloat", settings.pomoFloat);
     floatBtn.textContent = settings.pomoFloat ? "⭕ 悬浮窗：开" : "⚪ 悬浮窗：关";
-    toast(settings.pomoFloat ? "已开启悬浮窗：离开本页后右下角显示" : "已关闭悬浮窗");
+    // APK 版：开启时若未授予系统悬浮窗权限，引导去设置页授权
+    if (settings.pomoFloat && window.PomoBridge) {
+      try {
+        if (!window.PomoBridge.hasOverlayPermission()) {
+          window.PomoBridge.requestOverlayPermission();
+          toast("已打开悬浮窗：请在系统弹出的设置页允许「显示在其他应用上层」");
+        } else {
+          toast("已开启悬浮窗：通知栏 + 其他应用上方显示");
+        }
+      } catch (e) { toast("已开启悬浮窗"); }
+    } else {
+      toast(settings.pomoFloat ? "已开启悬浮窗：离开本页后右下角显示" : "已关闭悬浮窗");
+    }
     updateFloat();
+    syncBridge();
   } }, settings.pomoFloat ? "⭕ 悬浮窗：开" : "⚪ 悬浮窗：关");
 
   const card = h("div", { class: "card" },
@@ -206,9 +233,11 @@ export async function renderPomodoro(root) {
       timer = setInterval(tick, 250);
     }
     paint();
+    syncBridge();
   }
   function reset() {
     running = false; clearInterval(timer); remaining = dur(); paint();
+    syncBridge();
   }
   async function complete() {
     clearInterval(timer);
@@ -243,6 +272,7 @@ export async function renderPomodoro(root) {
       const roundEl = root.querySelector("#pomo-round");
       if (roundEl) roundEl.textContent = "第 " + (rounds + 1) + " 轮";
     }
+    syncBridge();
   }
   // 提前结束：彻底结束学习，不进入休息，按实际已专注时长计入统计
   async function endSession() {
@@ -271,6 +301,7 @@ export async function renderPomodoro(root) {
     // 彻底结束：回到专注初始态，不进休息，轮次保留（已完成轮次仍计入统计）
     mode = "work";
     remaining = dur();
+    syncBridge();
     window.__rerender();
   }
   // 跳过：休息模式直接进下一轮专注；专注模式跳过本段（按实际时长计入）并进入休息
@@ -298,7 +329,24 @@ export async function renderPomodoro(root) {
       toast("已跳过休息");
     }
     remaining = dur();
+    syncBridge();
     window.__rerender();
+  }
+
+  // APK 版：App 进程被系统回收后重建，若原生前台服务仍在计时，恢复剩余时间继续
+  if (window.PomoBridge) {
+    try {
+      if (window.PomoBridge.isRunning()) {
+        const ms = window.PomoBridge.getRemainingMs();
+        if (ms > 0) {
+          running = true;
+          remaining = Math.max(1, Math.ceil(ms / 1000));
+          endTime = Date.now() + ms;
+          timer = setInterval(tick, 250);
+          paint();
+        }
+      }
+    } catch (e) {}
   }
 }
 
