@@ -45,7 +45,8 @@ function ensureFloat() {
 function updateFloat() {
   if (!floatEl) return;
   const inPomo = window.__getCurrent && window.__getCurrent() === "pomodoro";
-  const show = !!settings.pomoFloat && running && !inPomo;
+  // 开启开关后即可见（不要求 running）：离开本页右下角显示当前阶段与剩余时间
+  const show = !!settings.pomoFloat && !inPomo;
   floatEl.style.display = show ? "flex" : "none";
   if (show) {
     const m = Math.floor(remaining / 60), s = remaining % 60;
@@ -122,7 +123,7 @@ export async function renderPomodoro(root) {
     settings.pomoFloat = !settings.pomoFloat;
     await db.setSetting("pomoFloat", settings.pomoFloat);
     floatBtn.textContent = settings.pomoFloat ? "⭕ 悬浮窗：开" : "⚪ 悬浮窗：关";
-    toast(settings.pomoFloat ? "已开启番茄悬浮窗（其他页面右下角显示）" : "已关闭番茄悬浮窗");
+    toast(settings.pomoFloat ? "已开启悬浮窗：离开本页后右下角显示" : "已关闭悬浮窗");
     updateFloat();
   } }, settings.pomoFloat ? "⭕ 悬浮窗：开" : "⚪ 悬浮窗：关");
 
