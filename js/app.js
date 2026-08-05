@@ -167,9 +167,10 @@ function route(name, opts) {
 // 手机返回键 / 浏览器后退：逐级返回上一视图；首页无记录时放行（允许退出）
 window.addEventListener("popstate", (e) => {
   const v = e.state && e.state.view;
-  if (!v) return; // 无记录：不拦截
-  if (v === "__reader") {
-    // 阅读器全屏层：返回键只负责关闭阅读器（不 route，避免重建书库）
+  if (!v) return; // 无记录：不拦截（允许退出）
+  // 阅读器打开时触发返回（popstate 的 state 已是回退后的书库视图）：
+  // 先关闭阅读器层，再回到书库
+  if (window.__readerOpen) {
     if (window.__closeReader) window.__closeReader();
     return;
   }
@@ -218,6 +219,9 @@ async function init() {
   });
 
   $("#settingsBtn").addEventListener("click", () => openSettings());
+
+  // 给首页初始记录打上 state，返回键回到首页时能恢复视图（否则第一级返回无视图可恢复）
+  try { history.replaceState({ view: "home" }, ""); } catch (e) {}
 
   route("home");
 }
