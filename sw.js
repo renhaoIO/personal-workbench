@@ -1,4 +1,4 @@
-const CACHE = "workbench-v24";
+const CACHE = "workbench-v25";
 const ASSETS = [
   "./",
   "./index.html",
