@@ -661,3 +661,16 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
 /* 夜间/护眼下分页底色跟随主题 */
 .page-viewport.r-theme-night .page-cur { background: #1b1e24; color: #cfd2d8; }
 .page-viewport.r-theme-sepia .page-cur { background: #efe6d0; color: #4a3f35; }
+
+/* ─── 番茄钟悬浮球 ─── */
+.pomo-float {
+  position: fixed; right: 14px; bottom: calc(14px + env(safe-area-inset-bottom));
+  display: none; align-items: center; gap: 7px; z-index: 999;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+  padding: 9px 15px; box-shadow: 0 4px 16px rgba(0,0,0,.18); cursor: pointer;
+  font-size: 13px; font-weight: 700; color: var(--text);
+  transition: transform .15s ease; -webkit-tap-highlight-color: transparent;
+}
+.pomo-float:active { transform: scale(.94); }
+.pomo-float .pf-icon { font-size: 15px; }
+.pomo-float .pf-time { font-variant-numeric: tabular-nums; color: var(--primary); }
