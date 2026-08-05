@@ -1,0 +1,60 @@
+# 云端自动构建 Android APK（GitHub Actions）
+# 触发方式：
+#   1. 推送 main 分支且改动包含 android/** 或本文件
+#   2. 手机/网页上手动触发：仓库 Actions 页 → Build Android APK → Run workflow
+# 产物：app-debug.apk 上传为 artifact，并自动发布为 GitHub Release（手机可直接下载安装）
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+
+      - name: Build debug APK
+        run: |
+          curl -sL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.5-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          export PATH="/tmp/gradle-8.5/bin:$PATH"
+          cd android
+          gradle assembleDebug --no-daemon --console=plain
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbench-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Workbench APK #${{ github.run_number }}
+          body: |
+            Android 版安装包（debug 签名，可直接安装到普通安卓机）。
+
+            - 番茄钟：系统悬浮窗 + 通知栏倒计时 + 阶段响铃
+            - 返回键逐级返回、阅读器、书签、批注等全部功能
+            - 网页版同步版本：v1.14.0 (build 26)
+          files: android/app/build/outputs/apk/debug/app-debug.apk
