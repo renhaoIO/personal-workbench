@@ -146,8 +146,12 @@ function closeSidebar() {
   $("#scrim").classList.remove("show");
 }
 
-function route(name) {
+function route(name, opts) {
   if (!VIEWS[name]) name = "home";
+  // 视图真正切换时入栈（__rerender 重渲染同视图不入栈）；popstate 返回时不再入栈
+  if (name !== current && !(opts && opts.fromPop)) {
+    try { history.pushState({ view: name }, ""); } catch (e) {}
+  }
   current = name;
   $$(".side-item").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
   const title = $("#appTitle");
@@ -156,12 +160,28 @@ function route(name) {
   root.innerHTML = "";
   VIEWS[name].render(root);
   window.scrollTo(0, 0);
+  // 路由变化后同步番茄悬浮球可见性
+  if (window.__pomoFloatSync) window.__pomoFloatSync();
 }
+
+// 手机返回键 / 浏览器后退：逐级返回上一视图；首页无记录时放行（允许退出）
+window.addEventListener("popstate", (e) => {
+  const v = e.state && e.state.view;
+  if (!v) return; // 无记录：不拦截
+  if (v === "__reader") {
+    // 阅读器全屏层：返回键只负责关闭阅读器（不 route，避免重建书库）
+    if (window.__closeReader) window.__closeReader();
+    return;
+  }
+  route(v, { fromPop: true });
+});
 
 // 供各模块在增删改后刷新当前视图
 window.__rerender = () => route(current);
 // 供各模块跳转到指定视图
 window.__route = (name) => route(name);
+// 供悬浮球等判断当前视图
+window.__getCurrent = () => current;
 
 async function init() {
   // 原生包（Capacitor）下用本地服务器加载，无需 Service Worker 离线缓存
