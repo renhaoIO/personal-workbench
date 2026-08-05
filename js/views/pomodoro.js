@@ -25,7 +25,36 @@ function modeLabel(m) {
 
 async function loadSettings() {
   settings = { ...DEFAULTS, ...(await db.getSetting("pomodoroSettings", {})) };
+  settings.pomoFloat = !!(await db.getSetting("pomoFloat", false));
 }
+
+// ============ 番茄悬浮球（应用内）============
+let floatEl = null;
+let floatTimer = null;
+
+function ensureFloat() {
+  if (floatEl) return;
+  floatEl = h("div", { class: "pomo-float" });
+  floatEl.innerHTML = '<span class="pf-icon">🍅</span><span class="pf-time">25:00</span>';
+  floatEl.addEventListener("click", () => { if (window.__route) window.__route("pomodoro"); });
+  document.body.appendChild(floatEl);
+  floatTimer = setInterval(updateFloat, 500);
+  updateFloat();
+}
+
+function updateFloat() {
+  if (!floatEl) return;
+  const inPomo = window.__getCurrent && window.__getCurrent() === "pomodoro";
+  const show = !!settings.pomoFloat && running && !inPomo;
+  floatEl.style.display = show ? "flex" : "none";
+  if (show) {
+    const m = Math.floor(remaining / 60), s = remaining % 60;
+    const t = String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    floatEl.querySelector(".pf-time").textContent = modeLabel(mode) + " " + t;
+  }
+}
+// 路由变化后由 app.js 调用，刷新悬浮球可见性
+window.__pomoFloatSync = updateFloat;
 
 // 阶段切换提示音：workDone=专注结束(上升三音) / breakDone=休息结束(下降两音)
 function chime(kind) {
@@ -53,6 +82,8 @@ export async function renderPomodoro(root) {
   clearInterval(timer);
   running = false;
   await loadSettings();
+  ensureFloat();
+  updateFloat();
   if (remaining === 0) remaining = dur();
   taskOptions = (await db.getAll("tasks")).filter((t) => !t.done);
   const taskCats = (await db.getAll("categories")).filter((c) => c.kind === "task");
@@ -87,12 +118,20 @@ export async function renderPomodoro(root) {
   const resetBtn = h("button", { class: "btn ghost", style: "flex:1", onclick: reset }, "↺ 重置");
   const setBtn = h("button", { class: "btn ghost", style: "flex:1", onclick: editSettings }, "⚙ 时长");
   const noiseBtn = h("button", { class: "btn ghost", style: "flex:1", onclick: () => window.__route("whitenoise") }, "🎧 白噪音");
+  const floatBtn = h("button", { class: "btn ghost", style: "flex:1", onclick: async () => {
+    settings.pomoFloat = !settings.pomoFloat;
+    await db.setSetting("pomoFloat", settings.pomoFloat);
+    floatBtn.textContent = settings.pomoFloat ? "⭕ 悬浮窗：开" : "⚪ 悬浮窗：关";
+    toast(settings.pomoFloat ? "已开启番茄悬浮窗（其他页面右下角显示）" : "已关闭番茄悬浮窗");
+    updateFloat();
+  } }, settings.pomoFloat ? "⭕ 悬浮窗：开" : "⚪ 悬浮窗：关");
 
   const card = h("div", { class: "card" },
     h("div", { class: "row spread" }, h("b", {}, "番茄时钟"), h("span", { class: "muted", id: "pomo-round" }, "第 " + (rounds + 1) + " 轮")),
     timerEl, modeEl, sel, catSel, startBtn,
     h("div", { class: "row", style: "gap:10px; margin-top:10px;" }, skipBtn, endBtn),
-    h("div", { class: "row", style: "gap:10px; margin-top:10px;" }, resetBtn, setBtn, noiseBtn)
+    h("div", { class: "row", style: "gap:10px; margin-top:10px;" }, resetBtn, setBtn, noiseBtn),
+    h("div", { class: "row", style: "gap:10px; margin-top:10px;" }, floatBtn)
   );
   root.appendChild(card);
 
