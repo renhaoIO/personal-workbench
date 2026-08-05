@@ -42,6 +42,8 @@ export async function openBook(id) {
   const book = await db.get("books", id);
   if (!book) return toast("图书不存在");
   if (book.format === "pdf") return openPdf(book);
+  // 入栈：返回键可从阅读器回到书库
+  try { history.pushState({ view: "__reader" }, ""); } catch (e) {}
 
   const s = await getReaderSettings();
   const bookmarks = await db.getAll("bookmarks");
@@ -1099,12 +1101,20 @@ function closeReader() {
   if (layer) { layer.remove(); layer = null; }
   document.body.classList.remove("reading");
   session = null;
-  if (window.__route) window.__route("reader");
+  const st = window.history.state && window.history.state.view;
+  if (st === "__reader") {
+    // 顶栏 ← / 程序关闭：回退历史，popstate 会 route 回书库
+    try { history.back(); } catch (e) { if (window.__route) window.__route("reader"); }
+  } else {
+    // Android 返回键场景：popstate 已把 __reader 弹出，直接回书库
+    if (window.__route) window.__route("reader");
+  }
 }
 
 // ============ PDF 预览 ============
 async function openPdf(book) {
   document.body.classList.add("reading");
+  try { history.pushState({ view: "__reader" }, ""); } catch (e) {}
   const blob = new Blob([book.raw], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const top = h("div", { class: "reader-top" },
@@ -1121,9 +1131,12 @@ async function openPdf(book) {
     URL.revokeObjectURL(url);
     layer2.remove();
     document.body.classList.remove("reading");
-    if (window.__route) window.__route("reader");
+    const st = window.history.state && window.history.state.view;
+    if (st === "__reader") { try { history.back(); } catch (e) { if (window.__route) window.__route("reader"); } }
+    else if (window.__route) window.__route("reader");
   };
 }
 function closePdf() { if (window.__pdfClose) window.__pdfClose(); }
 
 window.__openBook = openBook;
+window.__closeReader = closeReader;
