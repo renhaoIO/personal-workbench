@@ -32,14 +32,25 @@ function tx(store, mode) {
   return openDB().then((db) => db.transaction(store, mode).objectStore(store));
 }
 
+// 简单内存缓存：getAll 500ms 内复用（视图渲染常多次读全表），写操作失效
+const _allCache = {};
+function _invalidate(store) {
+  if (store) delete _allCache[store];
+  else for (const k in _allCache) delete _allCache[k];
+}
+
 export const db = {
   async getAll(store) {
+    const c = _allCache[store];
+    if (c && Date.now() - c.at < 500) return c.data;
     const os = await tx(store, "readonly");
-    return new Promise((res, rej) => {
+    const data = await new Promise((res, rej) => {
       const r = os.getAll();
       r.onsuccess = () => res(r.result || []);
       r.onerror = () => rej(r.error);
     });
+    _allCache[store] = { data, at: Date.now() };
+    return data;
   },
   async get(store, id) {
     const os = await tx(store, "readonly");
@@ -53,7 +64,7 @@ export const db = {
     const os = await tx(store, "readwrite");
     return new Promise((res, rej) => {
       const r = os.put(item);
-      r.onsuccess = () => res(item);
+      r.onsuccess = () => { _invalidate(store); res(item); };
       r.onerror = () => rej(r.error);
     });
   },
@@ -61,7 +72,7 @@ export const db = {
     const os = await tx(store, "readwrite");
     return new Promise((res, rej) => {
       const r = os.delete(id);
-      r.onsuccess = () => res();
+      r.onsuccess = () => { _invalidate(store); res(); };
       r.onerror = () => rej(r.error);
     });
   },
@@ -69,7 +80,7 @@ export const db = {
     const os = await tx(store, "readwrite");
     return new Promise((res, rej) => {
       const r = os.clear();
-      r.onsuccess = () => res();
+      r.onsuccess = () => { _invalidate(store); res(); };
       r.onerror = () => rej(r.error);
     });
   },
