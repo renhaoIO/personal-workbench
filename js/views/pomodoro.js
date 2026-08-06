@@ -42,29 +42,31 @@ function ensureFloat() {
   updateFloat();
 }
 
+let floatShown = false;
 function updateFloat() {
   if (!floatEl) return;
   const inPomo = window.__getCurrent && window.__getCurrent() === "pomodoro";
   // 开启开关后即可见（不要求 running）：离开本页右下角显示当前阶段与剩余时间
   const show = !!settings.pomoFloat && !inPomo;
-  floatEl.style.display = show ? "flex" : "none";
+  if (show !== floatShown) { floatEl.style.display = show ? "flex" : "none"; floatShown = show; }
   if (show) {
     const m = Math.floor(remaining / 60), s = remaining % 60;
     const t = String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-    floatEl.querySelector(".pf-time").textContent = modeLabel(mode) + " " + t;
+    const txt = modeLabel(mode) + " " + t;
+    if (floatEl.dataset.t !== txt) { floatEl.querySelector(".pf-time").textContent = txt; floatEl.dataset.t = txt; }
   }
 }
 // 路由变化后由 app.js 调用，刷新悬浮球可见性
 window.__pomoFloatSync = updateFloat;
 
 // ============ 原生桥同步（APK 版：系统悬浮窗 + 通知栏）============
-// 运行中且开启悬浮窗 → 启动原生前台服务（原生侧计时，后台不被冻结）；
-// 否则停止。PWA 版无 window.PomoBridge，此函数空转。
+// 运行中 → 启动原生前台服务（通知栏常驻倒计时，不依赖悬浮窗开关）；
+// showOverlay 参数控制系统悬浮球显隐。PWA 版无 window.PomoBridge，此函数空转。
 function syncBridge() {
   if (!window.PomoBridge) return;
   try {
-    if (running && settings.pomoFloat) {
-      window.PomoBridge.startPomo(endTime, modeLabel(mode));
+    if (running) {
+      window.PomoBridge.startPomo(endTime, modeLabel(mode), !!settings.pomoFloat);
     } else {
       window.PomoBridge.stopPomo();
     }
