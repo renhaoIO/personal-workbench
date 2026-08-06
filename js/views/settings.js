@@ -117,8 +117,40 @@ export async function openSettings() {
     },
   }, reminderOn ? "已开启" : "未开启");
 
+  // 字体大小：跟随系统 / 自定义
+  const fontMode = (await db.getSetting("fontMode")) || "follow";
+  const fontSize = Number(await db.getSetting("fontSize")) || 16;
+  const fontSel = h("select", { class: "input", style: "width:100%;" },
+    h("option", { value: "follow", selected: fontMode === "follow" ? "selected" : null }, "跟随系统"),
+    h("option", { value: "custom", selected: fontMode === "custom" ? "selected" : null }, "自定义")
+  );
+  const fontRange = h("input", { type: "range", min: "12", max: "24", step: "1", value: String(fontSize), style: "width:100%; margin-top:10px;" });
+  const fontVal = h("span", { class: "muted", style: "font-size:.8125rem;" }, fontSize + "px");
+  const setFontMode = (m) => {
+    fontRange.style.display = m === "custom" ? "block" : "none";
+    fontVal.style.display = m === "custom" ? "inline" : "none";
+  };
+  setFontMode(fontMode);
+  fontSel.addEventListener("change", async () => {
+    await db.setSetting("fontMode", fontSel.value);
+    setFontMode(fontSel.value);
+    await window.__applyFont();
+    toast(fontSel.value === "custom" ? "已切换为自定义字体大小" : "已跟随系统字体大小");
+  });
+  fontRange.addEventListener("input", () => { fontVal.textContent = fontRange.value + "px"; });
+  fontRange.addEventListener("change", async () => {
+    await db.setSetting("fontSize", +fontRange.value);
+    await window.__applyFont();
+  });
+
   const box = h("div", {},
     h("div", { class: "field" }, h("label", {}, "外观模式"), themeGrid),
+    h("div", { class: "field" },
+      h("label", {}, "字体大小"),
+      h("div", { class: "muted", style: "margin:-2px 0 9px;" }, "跟随系统时按手机设置缩放；自定义可调 12-24px"),
+      fontSel,
+      h("div", { class: "row", style: "gap:10px; align-items:center;" }, fontRange, fontVal)
+    ),
     h("div", { class: "field" },
       h("label", {}, "强调色 · 预设配色"),
       h("div", { class: "muted", style: "margin:-2px 0 9px;" }, "点「A 跟随主题」即恢复各主题自带配色，随时可切回"),
