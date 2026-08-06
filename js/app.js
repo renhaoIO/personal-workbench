@@ -100,6 +100,23 @@ async function setTheme(theme) {
 // 供设置页在切换外观/配色后即时刷新（含顶栏图标与 meta）
 window.__applyTheme = async () => { await applyTheme(); };
 
+// 字体大小：跟随系统（text-size-adjust auto + 默认 16px）/ 自定义（固定 text-size-adjust + 指定 px）
+async function applyFont() {
+  const mode = (await db.getSetting("fontMode")) || "follow";
+  const size = Number(await db.getSetting("fontSize")) || 16;
+  const root = document.documentElement;
+  if (mode === "custom") {
+    root.style.fontSize = Math.min(24, Math.max(12, size)) + "px";
+    root.style.webkitTextSizeAdjust = "100%";
+    root.style.textSizeAdjust = "100%";
+  } else {
+    root.style.fontSize = "";
+    root.style.webkitTextSizeAdjust = "";
+    root.style.textSizeAdjust = "";
+  }
+}
+window.__applyFont = applyFont;
+
 function buildSidebar() {
   const nav = $("#sideNav");
   nav.innerHTML = "";
@@ -185,8 +202,17 @@ window.__route = (name) => route(name);
 window.__getCurrent = () => current;
 
 async function init() {
-  // 原生包（Capacitor）下用本地服务器加载，无需 Service Worker 离线缓存
-  if (!window.Capacitor && "serviceWorker" in navigator) {
+  // WebView App：注销旧版本可能注册的 Service Worker，避免其 fetch 拦截 appassets 域名导致页面打不开
+  if (window.PomoBridge && "serviceWorker" in navigator) {
+    try {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) await r.unregister();
+    } catch (e) {}
+  }
+  // 原生包（Capacitor）或 WebView App（window.PomoBridge，MainActivity 注入）下用本地资源加载，
+  // 无需 Service Worker 离线缓存——WebView 里 SW 的 fetch 会对 appassets.androidplatform.net 发起
+  // 真实网络请求导致 ERR_INVALID_RESPONSE。
+  if (!window.Capacitor && !window.PomoBridge && "serviceWorker" in navigator) {
     try {
       const reg = await navigator.serviceWorker.register("./sw.js");
       // 主动检查更新（cache-first 策略下浏览器只在导航时检查 SW，长时间开着的页面不会自动更新）
@@ -205,6 +231,7 @@ async function init() {
   }
 
   await applyTheme();
+  await applyFont();
   await seedCategories();
   buildSidebar();
 
