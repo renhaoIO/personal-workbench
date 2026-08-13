@@ -53,7 +53,7 @@ export async function openBook(id) {
   ]);
   document.body.classList.add("reading");
   session = { book, settings: s, lastFlush: Date.now(), acc: 0, raf: 0, bookmarks, annotations,
-    uiHidden: false, pages: [], pageIndex: 0, animLock: false, touchX: 0 };
+    uiHidden: false, pages: [], pageIndex: 0, animLock: false, touchX: 0, pagesDirty: false };
 
   const top = h("div", { class: "reader-top" },
     h("button", { class: "icon-btn", onclick: closeReader }, "←"),
@@ -115,6 +115,8 @@ export async function openBook(id) {
   // 定位到上次进度
   requestAnimationFrame(() => {
     if (session.settings.mode === "scroll") {
+      renderContent(content, session.book, session.annotations);
+      applyContentStyle(content, session.settings);
       const target = (book.progress || 0) * (content.scrollHeight - content.clientHeight);
       content.scrollTop = Math.max(0, target || 0);
       updateChapterName(content, chapText);
@@ -131,15 +133,27 @@ export async function openBook(id) {
   session.flushTimer = setInterval(flush, 15000);
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("beforeunload", flush);
+  // 窗口尺寸变化（横竖屏/分屏）会使缓存分页失效：防抖后重建
+  window.addEventListener("resize", onWindowResize);
+}
+
+let resizeTimer = 0;
+function onWindowResize() {
+  if (!session) return;
+  session.pagesDirty = true;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (session.settings.mode !== "scroll" && layer && layer.querySelector(".page-viewport")) {
+      applyAndRebuild();
+    }
+  }, 250);
 }
 
 // 构建内容区：滚动模式=可滚动容器；分页模式=视口容器
 function buildContentArea(s) {
   if (s.mode === "scroll") {
-    const content = h("div", {});
-    renderContent(content, session.book, session.annotations);
-    applyContentStyle(content, s);
-    return content;
+    // 只建容器，内容由调用方在 rAF 中渲染一次（避免重复渲染全书）
+    return h("div", {});
   }
   const vp = h("div", { class: "page-viewport r-theme-" + s.theme });
   vp.style.fontSize = s.font + "px";
@@ -910,7 +924,7 @@ function buildSettingsPanel(content) {
 
   const themeSeg = h("div", { class: "seg" }, themeBtn("day", "日用"), themeBtn("sepia", "护眼"), themeBtn("night", "夜间"));
   const marginSeg = h("div", { class: "seg" }, marginBtn("narrow", "窄"), marginBtn("normal", "标准"), marginBtn("wide", "宽"));
-  const modeSeg = h("div", { class: "seg" }, modeBtn("scroll", "滚动"), modeBtn("cover", "切换"));
+  const modeSeg = h("div", { class: "seg" }, modeBtn("scroll", "滚动"), modeBtn("page", "切换"));
 
   panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "字号"), h("div", { class: "rs-row" }, fontMinus, fontVal, fontPlus)));
   panel.appendChild(h("div", { class: "rs-block" }, h("div", { class: "rs-label" }, "行距"), h("div", { class: "rs-row" }, lineMinus, lineVal, linePlus)));
@@ -965,26 +979,31 @@ function buildSettingsPanel(content) {
 // 字号/行距/主题/边距变化后的重建（滚动=应用样式；分页=重新分页）
 function applyAndRebuild() {
   if (session.settings.mode === "scroll") {
+    // 滚动模式：仅应用样式，不重建分页；但分页结果已失效，下次切回需重建
+    session.pagesDirty = true;
     const content = layer.querySelector(".reader-content");
     if (content) { applyContentStyle(content, session.settings); }
     return;
   }
-  const ci = session.pages[session.pageIndex]?.chapterIndex || 0;
+  // 分页模式：按当前进度比例定位（避免 findIndex 落回首页）
+  const frac = session.pages.length > 1 ? session.pageIndex / (session.pages.length - 1) : (session.book.progress || 0);
   session.pages = buildPages(session.settings);
+  session.pagesDirty = false;
+  if (!session.pages.length) session.pages = [{ chapterIndex: 0, html: "<p>（空书）</p>" }];
   const vp = layer.querySelector(".page-viewport");
   if (vp) {
     vp.style.fontSize = session.settings.font + "px";
     vp.style.lineHeight = session.settings.line;
     vp.className = "page-viewport r-theme-" + session.settings.theme;
   }
-  const idx = session.pages.findIndex((p) => p.chapterIndex === ci);
-  turnToPage(idx >= 0 ? idx : session.pageIndex);
+  session.pageIndex = Math.max(0, Math.min(session.pages.length - 1,
+    Math.round(frac * (session.pages.length - 1))));
+  renderPage(session.pageIndex);
+  updateAfterTurn();
 }
 
 // 翻页方式切换（滚动↔分页）
 function switchMode() {
-  const oldMode = session.settings.mode === "scroll" ? "scroll" : "page";
-  const ci = session.pages.length ? session.pages[session.pageIndex]?.chapterIndex || 0 : 0;
   const frac = session.book.progress || 0;
   const oldContent = layer.querySelector(".reader-content");
   const oldVp = layer.querySelector(".page-viewport");
@@ -1002,14 +1021,16 @@ function switchMode() {
       const target = frac * (newContent.scrollHeight - newContent.clientHeight);
       newContent.scrollTop = Math.max(0, target || 0);
     } else {
-      session.pages = buildPages(session.settings);
-      if (!session.pages.length) session.pages = [{ chapterIndex: 0, html: "<p>（空书）</p>" }];
+      // 分页结果可复用：字号/行距/边距/主题没变时切换模式无需重建
+      if (!session.pages.length || session.pagesDirty) {
+        session.pages = buildPages(session.settings);
+        session.pagesDirty = false;
+        if (!session.pages.length) session.pages = [{ chapterIndex: 0, html: "<p>（空书）</p>" }];
+      }
+      // 按阅读进度比例定位（滚动比例≈页比例），不跳回首页
       session.pageIndex = Math.max(0, Math.min(session.pages.length - 1,
         Math.round(frac * (session.pages.length - 1))));
       renderPage(session.pageIndex);
-      // 尝试落到原章节
-      const idx = session.pages.findIndex((p) => p.chapterIndex === ci);
-      if (idx >= 0) { session.pageIndex = idx; renderPage(idx); }
     }
     updateAfterTurn();
   });
@@ -1108,6 +1129,8 @@ function closeReader() {
   document.removeEventListener("visibilitychange", onVisibility);
   document.removeEventListener("selectionchange", onSelectionChange);
   window.removeEventListener("beforeunload", flush);
+  window.removeEventListener("resize", onWindowResize);
+  clearTimeout(resizeTimer);
   hideAnnoBar();
   closeAnnoEditor();
   if (annoBar) { annoBar.remove(); annoBar = null; }
