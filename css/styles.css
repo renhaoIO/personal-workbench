@@ -502,6 +502,9 @@ body.reading .appbar, body.reading .sidebar, body.reading .scrim { display: none
   padding-top: 18px; padding-bottom: 40px; background: var(--surface); color: var(--text);
 }
 .reader-content p { margin: 0 0 1.05em; text-align: justify; }
+/* 正文继承容器字号（A-/A+ 生效），防止 epub 内联 font-size 覆盖 */
+.reader-content p, .reader-content li, .reader-content blockquote,
+.page-cur p, .page-cur li, .page-cur blockquote { font-size: inherit !important; }
 .reader-content .r-ch { font-size: 1.15em; font-weight: 800; margin: 1.4em 0 .7em; text-align: left; }
 .r-theme-day { background: #ffffff; color: #1a1c23; }
 .r-theme-sepia { background: #f4ecd8; color: #4a3f35; }
