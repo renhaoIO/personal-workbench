@@ -46,9 +46,11 @@ export async function openBook(id) {
   try { history.pushState({ view: "__reader" }, ""); } catch (e) {}
   window.__readerOpen = true;
 
-  const s = await getReaderSettings();
-  const bookmarks = await db.getAll("bookmarks");
-  const annotations = await db.getAll("annotations");
+  const [s, bookmarks, annotations] = await Promise.all([
+    getReaderSettings(),
+    db.getAll("bookmarks"),
+    db.getAll("annotations"),
+  ]);
   document.body.classList.add("reading");
   session = { book, settings: s, lastFlush: Date.now(), acc: 0, raf: 0, bookmarks, annotations,
     uiHidden: false, pages: [], pageIndex: 0, animLock: false, touchX: 0 };
@@ -156,7 +158,8 @@ function buildPages(s) {
   const pad = padOf(s);
   const pageH = Math.max(120, vh - 18 - 40);
 
-  // 测量容器（与真实页同宽同样式，隐藏）
+  // 测量容器（与真实页同宽同样式，隐藏）。追加式测量：只 append 新块再读高度，
+  // 避免每次重建已有内容（O(n²) 强制布局 → O(n)）
   const measurer = document.createElement("div");
   measurer.style.cssText = `position:fixed;left:-10000px;top:0;visibility:hidden;width:${vw}px;font-size:${s.font}px;line-height:${s.line};padding-left:${pad}px;padding-right:${pad}px;`;
   measurer.className = "r-theme-" + s.theme;
@@ -165,17 +168,21 @@ function buildPages(s) {
   const pages = [];
   let cur = [];
   const flush = () => { if (cur.length) { pages.push({ chapterIndex: cur[0].ci, html: cur.map((b) => b.html).join("") }); cur = []; } };
+  const removeLast = () => { if (measurer.lastElementChild) measurer.lastElementChild.remove(); };
 
   book.chapters.forEach((ch, ci) => {
     const html = annotateChapter(ch.html, book.id, ci, session.annotations);
     const blocks = parseBlocks(html);
     for (const b of blocks) {
-      measurer.innerHTML = cur.map((x) => x.html).join("");
-      const h0 = measurer.scrollHeight;
-      measurer.innerHTML += b;
+      measurer.insertAdjacentHTML("beforeend", b);
       if (measurer.scrollHeight <= pageH) { cur.push({ ci, html: b }); continue; }
-      // 放不下
-      if (cur.length) { flush(); measurer.innerHTML = b; if (measurer.scrollHeight <= pageH) { cur.push({ ci, html: b }); continue; } }
+      // 放不下：撤掉刚加的块
+      removeLast();
+      if (cur.length) { flush(); measurer.textContent = ""; }
+      // 单块单独测一次
+      measurer.insertAdjacentHTML("beforeend", b);
+      if (measurer.scrollHeight <= pageH) { cur.push({ ci, html: b }); continue; }
+      removeLast();
       // 单块超高：拆子元素
       splitBlock(b, pageH, measurer, pages, ci);
     }
@@ -211,17 +218,21 @@ function splitBlock(blockHtml, pageH, measurer, pages, ci) {
   const root = doc.body.firstElementChild || doc.body;
   const children = root.children && root.children.length ? [...root.children] : [root];
   let sub = [];
-  const flushSub = () => { if (sub.length) { pages.push({ chapterIndex: ci, html: sub.join("") }); sub = []; } };
+  const flushSub = () => {
+    if (sub.length) { pages.push({ chapterIndex: ci, html: sub.join("") }); sub = []; }
+    measurer.textContent = "";
+  };
+  const removeLast = () => { if (measurer.lastElementChild) measurer.lastElementChild.remove(); };
   for (const c of children) {
-    measurer.innerHTML = sub.join("");
-    const h0 = measurer.scrollHeight;
     let html = c.outerHTML;
     if (c.tagName === "IMG") html = c.outerHTML.replace(/<img/i, '<img style="max-height:55vh"').replace(/\/>$/, "/>");
-    measurer.innerHTML += html;
+    measurer.insertAdjacentHTML("beforeend", html);
     if (measurer.scrollHeight <= pageH) { sub.push(html); continue; }
+    removeLast();
     flushSub();
-    measurer.innerHTML = html;
+    measurer.insertAdjacentHTML("beforeend", html);
     if (measurer.scrollHeight <= pageH) { sub.push(html); continue; }
+    removeLast();
     // 单独也放不下：文本类元素按字符二分，尽量填满每页
     if (/^(p|div|li|h[1-6]|blockquote|section|article)$/i.test(c.tagName) && c.textContent.trim().length > 4) {
       let restHtml = html;
