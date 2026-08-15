@@ -2,11 +2,12 @@
 import { uid } from "./util.js";
 
 const DB_NAME = "personal-workbench";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 // categories.kind: "task" | "diary" | "book"
 // workouts: 健身训练计划与动作；books: 本地图书；readingLog: 阅读时长记录
-export const STORES = ["tasks", "captures", "notes", "pomodoro", "diary", "categories", "settings", "workouts", "books", "readingLog", "bookmarks", "annotations"];
+// activities: 活动时间轴（番茄/阅读/手动）；schedules: 课表；countdowns: 倒数日；dailyStatus: 每日状态
+export const STORES = ["tasks", "captures", "notes", "pomodoro", "diary", "categories", "settings", "workouts", "books", "readingLog", "bookmarks", "annotations", "activities", "schedules", "countdowns", "dailyStatus"];
 
 let dbp = null;
 function openDB() {
@@ -117,3 +118,22 @@ export const db = {
 };
 
 export { uid };
+
+// 记录活动时间轴（番茄、阅读、手动均可调用）
+export async function logActivity({ title, category, color, start, end, source }) {
+  const s = start || Date.now();
+  const e = end || Date.now();
+  const d = new Date(s);
+  const p = (n) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return db.put("activities", {
+    id: uid(),
+    title: title || "活动",
+    category: category || "",
+    color: color || "",
+    start: s,
+    end: e,
+    date,
+    source: source || "manual",
+  });
+}

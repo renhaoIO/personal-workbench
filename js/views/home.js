@@ -1,6 +1,7 @@
 // 主页：实时时钟 + 专注热力图 + 今日概览 + 今日待办
 import { db } from "../db.js";
 import { h, fmtDate, fmtTime, toast, openModal, closeModal, confirmDialog } from "../util.js";
+import { getUpcomingCountdowns } from "./countdown.js";
 
 let clockTimer = null;
 
@@ -109,8 +110,15 @@ export async function renderHome(root) {
   root.appendChild(h("h2", { class: "section" }, "专注 · 阅读热力图（近半年）"));
   root.appendChild(h("div", { class: "card" }, heatWrap, legend));
 
+  // ---- 今日状态 ----
+  root.appendChild(h("h2", { class: "section", style: "margin-top:20px;" }, "今日状态"));
+  await renderTodayStatus(root);
+
+  // ---- 近期倒数日 ----
+  await renderHomeCountdowns(root);
+
   // ---- 今日待办 ----
-  root.appendChild(h("h2", { class: "section", style: "margin-top:8px;" }, "今日待办"));
+  root.appendChild(h("h2", { class: "section", style: "margin-top:20px;" }, "今日待办"));
   const tasks = (await db.getAll("tasks")).filter((t) => !t.done);
   const endToday = new Date(); endToday.setHours(23, 59, 59, 999);
   const due = tasks.filter((t) => t.due && t.due <= endToday.getTime());
@@ -191,4 +199,54 @@ function detailRow(ico, title, sub, val) {
     ),
     h("div", { class: "detail-val" }, val)
   );
+}
+
+async function renderTodayStatus(root) {
+  const today = fmtDate(Date.now());
+  const s = await db.get("dailyStatus", today);
+  const moods = ["—", "😞", "😕", "😐", "🙂", "😄"];
+  const labels = [
+    { key: "study", name: "学习状态", val: s?.study || 0 },
+    { key: "body", name: "身体状态", val: s?.body || 0 },
+  ];
+
+  const card = h("div", { class: "card today-status-card", onclick: () => window.__route("stats") });
+  const row = h("div", { class: "ts-row" });
+  for (const item of labels) {
+    row.appendChild(h("div", { class: "ts-cell" },
+      h("div", { class: "ts-name" }, item.name),
+      h("div", { class: "ts-face" }, moods[item.val] || "—"),
+      h("div", { class: "ts-bar" },
+        h("div", { class: "ts-fill", style: `width:${(item.val / 5) * 100}%;` })
+      )
+    ));
+  }
+  // 今日目标
+  row.appendChild(h("div", { class: "ts-cell" },
+    h("div", { class: "ts-name" }, "今日目标"),
+    h("div", { class: "ts-goal" }, s?.goal ? s.goal.slice(0, 18) + (s.goal.length > 18 ? "…" : "") : "—"),
+    h("div", { class: "ts-bar" }, h("div", { class: "ts-fill", style: "width:0%;" }))
+  ));
+
+  card.appendChild(row);
+  card.appendChild(h("button", {
+    class: "ts-record-btn",
+    onclick: (e) => { e.stopPropagation(); window.__route("stats"); },
+  }, "📝 记录状态"));
+  root.appendChild(card);
+}
+
+async function renderHomeCountdowns(root) {
+  const cds = await getUpcomingCountdowns(3);
+  if (!cds.length) return;
+  root.appendChild(h("h2", { class: "section", style: "margin-top:20px;" }, "近期倒数日"));
+  const wrap = h("div", { class: "card cd-mini-list" });
+  for (const c of cds) {
+    wrap.appendChild(h("div", { class: "cd-mini", onclick: () => window.__route("countdown") },
+      h("span", { class: "cd-mini-dot", style: `background:${c.color};` }),
+      h("span", { class: "cd-mini-title" }, c.title),
+      h("span", { class: "cd-mini-days" }, c.days === 0 ? "今天" : `${c.days} 天后`)
+    ));
+  }
+  root.appendChild(wrap);
 }

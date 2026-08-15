@@ -181,31 +181,49 @@ function planForm(plan, rerender) {
     )
   );
 
-  // 动作列表（可增删）
+  // 动作卡片列表（可增删）
   const exWrap = h("div", { class: "fit-exeditor" });
   function renderEx() {
     exWrap.innerHTML = "";
-    if (!model.exercises.length) exWrap.appendChild(h("div", { class: "muted", style: "padding:4px 2px;" }, "还没有动作，点下方添加"));
+    if (!model.exercises.length) exWrap.appendChild(h("div", { class: "muted", style: "padding:8px 2px;" }, "还没有动作，点下方添加"));
     model.exercises.forEach((ex, idx) => {
-      const name = h("input", { class: "input ex-name", placeholder: "动作名", value: ex.name });
-      const sets = h("input", { class: "input ex-num", type: "number", min: "0", placeholder: "组", value: ex.sets || "" });
-      const reps = h("input", { class: "input ex-rep", placeholder: "次数/时长", value: ex.reps || "" });
-      const weight = h("input", { class: "input ex-w", placeholder: "重量(可选)", value: ex.weight || "" });
-      const rest = h("input", { class: "input ex-num", type: "number", min: "0", placeholder: "休s", value: ex.rest || "" });
+      const name = h("input", { class: "input fex-name", placeholder: "动作名称，如：哑铃卧推", value: ex.name });
+      const sets = h("input", { class: "input fex-num", type: "number", min: "0", placeholder: "4", value: ex.sets || "" });
+      const reps = h("input", { class: "input fex-mid", placeholder: "12", value: ex.reps || "" });
+      const weight = h("input", { class: "input fex-mid", placeholder: "20kg", value: ex.weight || "" });
+      const rest = h("input", { class: "input fex-num", type: "number", min: "0", placeholder: "60", value: ex.rest || "" });
       name.oninput = () => (ex.name = name.value);
       sets.oninput = () => (ex.sets = sets.value);
       reps.oninput = () => (ex.reps = reps.value);
       weight.oninput = () => (ex.weight = weight.value);
       rest.oninput = () => (ex.rest = rest.value);
-      exWrap.appendChild(h("div", { class: "fit-exrow" },
-        name,
-        h("div", { class: "fit-exrow-small" }, sets, reps, weight, rest),
-        h("button", { class: "cat-mini del", title: "删除", onclick: () => { model.exercises.splice(idx, 1); renderEx(); } }, "✕")
+
+      exWrap.appendChild(h("div", { class: "fit-excard" },
+        h("button", { class: "cat-mini del fex-del", title: "删除", onclick: () => { model.exercises.splice(idx, 1); renderEx(); } }, "✕"),
+        h("div", { class: "fex-head" }, name),
+        h("div", { class: "fex-grid" },
+          h("div", { class: "fex-cell" },
+            h("label", {}, "组数"),
+            sets
+          ),
+          h("div", { class: "fex-cell" },
+            h("label", {}, "次数 / 时长"),
+            reps
+          ),
+          h("div", { class: "fex-cell" },
+            h("label", {}, "重量"),
+            weight
+          ),
+          h("div", { class: "fex-cell" },
+            h("label", {}, "休息 (秒)"),
+            rest
+          )
+        )
       ));
     });
   }
   renderEx();
-  const addBtn = h("button", { class: "btn ghost block", style: "margin-top:8px;", onclick: () => { model.exercises.push({ id: uid(), name: "", sets: "", reps: "", weight: "", rest: "" }); renderEx(); } }, "＋ 添加动作");
+  const addBtn = h("button", { class: "btn ghost block", style: "margin-top:10px;", onclick: () => { model.exercises.push({ id: uid(), name: "", sets: "", reps: "", weight: "", rest: "" }); renderEx(); } }, "＋ 添加动作");
 
   const form = h("div", {},
     h("div", { class: "field" }, h("label", {}, "名称"), nameI),

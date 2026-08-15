@@ -12,6 +12,8 @@ import { renderWhiteNoise } from "./views/whitenoise.js";
 import { renderAchievements } from "./views/achievements.js";
 import { renderFitness } from "./views/fitness.js";
 import { renderReader } from "./views/reader.js";
+import { renderSchedule } from "./views/schedule.js";
+import { renderCountdown } from "./views/countdown.js";
 import "./views/read.js"; // 副作用引入：注册 window.__openBook 全屏阅读器
 import { openSettings } from "./views/settings.js";
 import { openCategoryManager } from "./views/categories.js";
@@ -20,6 +22,8 @@ const NAV = [
   { key: "home", title: "主页", ico: "🏠" },
   { key: "pomodoro", title: "番茄钟", ico: "🍅" },
   { key: "tasks", title: "任务", ico: "✅" },
+  { key: "schedule", title: "课表", ico: "📅" },
+  { key: "countdown", title: "倒数日", ico: "🎯" },
   { key: "capture", title: "速记", ico: "⚡" },
   { key: "notes", title: "笔记", ico: "📝" },
   { key: "diary", title: "日记", ico: "📔" },
@@ -34,6 +38,8 @@ const VIEWS = {
   home: { title: "主页", render: renderHome },
   pomodoro: { title: "番茄钟", render: renderPomodoro },
   tasks: { title: "任务", render: renderTasks },
+  schedule: { title: "课表", render: renderSchedule },
+  countdown: { title: "倒数日", render: renderCountdown },
   capture: { title: "速记", render: renderCapture },
   notes: { title: "笔记", render: renderNotes },
   diary: { title: "日记", render: renderDiary },

@@ -1,5 +1,5 @@
 // 番茄时钟模块：工作/休息计时，可绑定任务，记录专注会话
-import { db, uid } from "../db.js";
+import { db, uid, logActivity } from "../db.js";
 import { h, fmtDate, fromNow, toast, openModal, closeModal, confirmDialog } from "../util.js";
 import { donut } from "./charts.js";
 
@@ -244,7 +244,10 @@ export async function renderPomodoro(root) {
   async function complete() {
     clearInterval(timer);
     if (mode === "work") {
-      await db.put("pomodoro", { id: uid(), type: "work", startedAt: Date.now() - settings.workMin * 60000, durationSec: settings.workMin * 60, taskId, category: catId });
+      const startAt = Date.now() - settings.workMin * 60000;
+      await db.put("pomodoro", { id: uid(), type: "work", startedAt: startAt, durationSec: settings.workMin * 60, taskId, category: catId });
+      const taskTitle = taskOptions.find((t) => t.id === taskId)?.title || "专注";
+      await logActivity({ title: "🍅 " + taskTitle, category: catId, start: startAt, end: Date.now(), source: "pomodoro" });
       rounds++;
       chime("workDone");
       mode = rounds % settings.roundsBeforeLong === 0 ? "long" : "break";
@@ -285,11 +288,14 @@ export async function renderPomodoro(root) {
         const ok = await confirmDialog("结束本次学习？已专注 " + mins + " 分钟将被记录到统计。");
         if (!ok) return;
         running = false; clearInterval(timer);
+        const startAt = Date.now() - elapsed * 1000;
         await db.put("pomodoro", {
           id: uid(), type: "work",
-          startedAt: Date.now() - elapsed * 1000, // 按实际跨度回填开始时间
+          startedAt: startAt, // 按实际跨度回填开始时间
           durationSec: elapsed, taskId, category: catId,
         });
+        const taskTitle = taskOptions.find((t) => t.id === taskId)?.title || "专注";
+        await logActivity({ title: "🍅 " + taskTitle, category: catId, start: startAt, end: Date.now(), source: "pomodoro" });
         toast("已结束学习，记录专注 " + mins + " 分钟");
       } else {
         running = false; clearInterval(timer);
@@ -315,11 +321,14 @@ export async function renderPomodoro(root) {
         const mins = Math.round(elapsed / 60);
         const ok = await confirmDialog("跳过本段学习？已专注 " + mins + " 分钟将被记录，随后进入休息。");
         if (!ok) return;
+        const startAt = Date.now() - elapsed * 1000;
         await db.put("pomodoro", {
           id: uid(), type: "work",
-          startedAt: Date.now() - elapsed * 1000,
+          startedAt: startAt,
           durationSec: elapsed, taskId, category: catId,
         });
+        const taskTitle = taskOptions.find((t) => t.id === taskId)?.title || "专注";
+        await logActivity({ title: "🍅 " + taskTitle, category: catId, start: startAt, end: Date.now(), source: "pomodoro" });
         rounds++;
         toast("已跳过本段，记录专注 " + mins + " 分钟");
       } else {
